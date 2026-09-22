@@ -213,7 +213,29 @@ files:
       opcache.enable = 1
 EOF
 
-    # 7.2 GitHub Actions
+    # 7.2 Nginx Configuration for Moodle
+    mkdir -p .platform/nginx/conf.d/elasticbeanstalk
+    cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/moodle.conf
+    # 1. Block access to hidden files and directories (like .git, .env)
+    location ~ /\.(?!well-known).* {
+    deny all;
+    return 404;
+    }
+
+    # 2. Block access to Moodle internal data/system directories
+    location ~ ^/(?:temp|cache|local/codechecker)/ {
+    deny all;
+    return 404;
+    }
+
+    # 3. Handle Moodle slash arguments (fixes broken CSS/JS/images)
+    # If a file isn't found, fallback to Moodle's index or file handlers
+    location / {
+    try_files $uri $uri/ /index.php$is_args$args;
+    }
+EOF
+
+    # 7.3 GitHub Actions
     mkdir -p .github/workflows
     cat << 'EOF' > .github/workflows/deploy.yml
 name: Deploy Moodle to AWS Elastic Beanstalk
@@ -237,7 +259,7 @@ jobs:
         deployment_package: HEAD
 EOF
 
-    # 7.3 Diagnostic PHP Script
+    # 7.4 Diagnostic PHP Script
     cat << 'EOF' > sys-test.php
 <?php
 ini_set('display_errors', 1);
