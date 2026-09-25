@@ -259,7 +259,27 @@ jobs:
         deployment_package: HEAD
 EOF
 
-    # 7.4 Diagnostic PHP Script
+    # 7.4 Moodle PHP Extension Dependencies
+    cat << 'EOF' > .ebextensions/03-php-modules.config
+    packages:
+    yum:
+    php-gd: []
+    php-intl: []
+    php-mbstring: []
+    php-soap: []
+    php-xml: []
+    php-sodium: []
+    php-pecl-zip: []
+    php-pecl-redis6: []
+    php-curl: []
+    php-zip: []
+    php-soap: []
+    php-ldap: []
+    php-xmlrpc: []
+    php-openssl: []
+EOF
+
+    # 7.5 Diagnostic PHP Script
     cat << 'EOF' > sys-test.php
 <?php
 ini_set('display_errors', 1);
