@@ -100,8 +100,9 @@ provision_eb() {
     cat << 'EOF' > eb-options.json
 [
   {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "1"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "4"},
+  {"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
+  {"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "2"},
+  {"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "6"},
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
@@ -263,23 +264,80 @@ EOF
     cat << 'EOF' > .ebextensions/03-php-modules.config
     packages:
     yum:
-    php-gd: []
-    php-intl: []
-    php-mbstring: []
-    php-soap: []
-    php-xml: []
-    php-sodium: []
-    php-pecl-zip: []
-    php-pecl-redis6: []
-    php-curl: []
-    php-zip: []
-    php-soap: []
-    php-ldap: []
-    php-xmlrpc: []
-    php-openssl: []
+    php8.3-gd: []
+    php8.3-intl: []
+    php8.3-mbstring: []
+    php8.3-soap: []
+    php8.3-xml: []
+    php8.3-sodium: []
+    php8.3-pecl-redis6: []
+    php8.3-curl: []
+    php8.3-zip: []
+    php8.3-soap: []
+    php8.3-ldap: []
+    php8.3-xmlrpc: []
+    php8.3-openssl: []
 EOF
 
-    # 7.5 Diagnostic PHP Script
+    # 7.5 PHP-FPM Worker Tuning
+    cat << 'EOF' > .ebextensions/04-php-fpm.config
+files:
+  "/etc/php-fpm.d/z-moodle.conf":
+    mode: "000644"
+    owner: root
+    group: root
+    content: |
+      [www]
+      pm = dynamic
+      pm.max_children = 40
+      pm.start_servers = 10
+      pm.min_spare_servers = 10
+      pm.max_spare_servers = 20
+      pm.max_requests = 500
+EOF
+
+    # 7.6 EFS-Locked Cron Job
+    cat << 'EOF' > .ebextensions/05-cron.config
+files:
+  "/usr/local/bin/moodle-cron.sh":
+    mode: "000755"
+    owner: root
+    group: root
+    content: |
+      #!/bin/bash
+      LOCK_DIR="/mnt/moodledata/cron-lock"
+      if mkdir "$LOCK_DIR" 2>/dev/null; then
+          sudo -u webapp /usr/bin/php /var/app/current/admin/cli/cron.php > /dev/null 2>&1
+          rmdir "$LOCK_DIR"
+      else
+          if [ -n "$(find "$LOCK_DIR" -prune -mmin +15 2>/dev/null)" ]; then
+              rmdir "$LOCK_DIR" 2>/dev/null
+          fi
+      fi
+
+  "/etc/cron.d/moodle":
+    mode: "000644"
+    owner: root
+    group: root
+    content: |
+      * * * * * root /usr/local/bin/moodle-cron.sh
+EOF
+
+    # 7.7 Environment Config
+    cat << 'EOF' > .ebextensions/00-environment.config
+option_settings:
+  aws:elasticbeanstalk:command:
+    Timeout: 1800
+EOF
+
+    # 7.8 Document root
+    cat << 'EOF' > .ebextensions/06-document-root.config
+option_settings:
+  aws:elasticbeanstalk:container:php:phpini:
+    document_root: /public
+EOF
+
+    # 7.9 Diagnostic PHP Script
     cat << 'EOF' > sys-test.php
 <?php
 ini_set('display_errors', 1);
