@@ -9,6 +9,7 @@ APP_NAME="MaruMoodleLMS"
 ENV_NAME="MaruMoodle-Prod-v2"
 DB_CLUSTER_ID="maru-moodle-db"
 DB_INSTANCE_ID="maru-moodle-db-instance"
+DB_PARAM_GROUP="moodle-aurora-mysql84-params"
 REDIS_ID="maru-moodle-redis"
 
 > $LOG_FILE
@@ -32,9 +33,10 @@ setup_iam() {
 }
 EOF
     
-    # 1.2 Create EB EC2 Role & Attach Managed Policy
+    # 1.2 Create EB EC2 Role & Attach Managed Policies (Including SSM Default Policy for Session Manager)
     aws iam create-role --role-name aws-elasticbeanstalk-ec2-role --assume-role-policy-document file://ec2-trust-policy.json 2>>$LOG_FILE || echo "   -> Role already exists." | tee -a $LOG_FILE
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>>$LOG_FILE || true
+    aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy 2>>$LOG_FILE || true
     
     # 1.3 Create Instance Profile and link Role
     aws iam create-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || echo "   -> Instance profile exists." | tee -a $LOG_FILE
@@ -46,82 +48,6 @@ EOF
     
     echo "   -> Generating Deployment Keys (Saved to github_deploy_keys.json)..." | tee -a $LOG_FILE
     aws iam create-access-key --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
-}
-
-provision_efs() {
-    echo "2. Provisioning Elastic File System (EFS) & Subnet Mounts..." | tee -a $LOG_FILE
-    EFS_ID=$(aws efs create-file-system --creation-token MoodleEFS --encrypted --region $REGION --query 'FileSystemId' --output text 2>>$LOG_FILE || aws efs describe-file-systems --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
-    echo "   -> EFS Created: $EFS_ID" | tee -a $LOG_FILE
-
-    # Get Default VPC and Security Group
-    DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>>$LOG_FILE)
-    DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
-    
-    # Create Mount Targets in all Default Subnets
-    SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" --region $REGION --query "Subnets[*].SubnetId" --output text 2>>$LOG_FILE)
-    for subnet in $SUBNETS; do
-        aws efs create-mount-target --file-system-id $EFS_ID --subnet-id $subnet --security-groups $DEFAULT_SG_ID 2>>$LOG_FILE || echo "   -> Mount target already exists for $subnet" | tee -a $LOG_FILE
-    done
-    export EFS_ID
-}
-
-provision_redis() {
-    echo "3. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling)..." | tee -a $LOG_FILE
-    # Upgraded from cache-cluster to replication-group for Multi-AZ and Autoscaling support
-    aws elasticache create-replication-group \
-        --replication-group-id $REDIS_ID \
-        --replication-group-description "Moodle Redis Cluster" \
-        --engine redis \
-        --cache-node-type cache.t4g.micro \
-        --num-cache-clusters 2 \
-        --automatic-failover-enabled \
-        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Replication Group already exists." | tee -a $LOG_FILE
-    
-    # Register Redis for Autoscaling (Scale replicas based on CPU)
-    aws application-autoscaling register-scalable-target \
-        --service-namespace elasticache \
-        --resource-id replication-group/$REDIS_ID \
-        --scalable-dimension elasticache:replication-group:NodeGroups \
-        --min-capacity 1 --max-capacity 3 >> $LOG_FILE 2>&1 || true
-    echo "   -> Redis cluster and application autoscaling initiated." | tee -a $LOG_FILE
-}
-
-provision_aurora() {
-    echo "4. Provisioning Aurora Serverless v2 (MySQL 8.4)..." | tee -a $LOG_FILE
-    aws rds create-db-cluster --db-cluster-identifier $DB_CLUSTER_ID --engine aurora-mysql --engine-version 8.4.mysql_aurora.8.4.8 --master-username moodleadmin --master-user-password TempPassword123\! --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=16.0 --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Cluster exists." | tee -a $LOG_FILE
-    aws rds create-db-instance --db-instance-identifier $DB_INSTANCE_ID --db-cluster-identifier $DB_CLUSTER_ID --engine aurora-mysql --db-instance-class db.serverless --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Instance exists." | tee -a $LOG_FILE
-}
-
-provision_eb() {
-    echo "5. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70%)..." | tee -a $LOG_FILE
-    aws elasticbeanstalk create-application --application-name $APP_NAME --region $REGION >> $LOG_FILE 2>&1 || true
-
-    # Generate EB Autoscaling Options
-    cat << 'EOF' > eb-options.json
-[
-  {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
-  {"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "2"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "6"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"}
-]
-EOF
-
-    STACK_NAME=$(aws elasticbeanstalk list-available-solution-stacks --region $REGION --query "SolutionStacks[?contains(@, 'running PHP 8.3')] | [0]" --output text 2>>$LOG_FILE)
-    aws elasticbeanstalk create-environment --application-name $APP_NAME --environment-name $ENV_NAME --solution-stack-name "$STACK_NAME" --option-settings file://eb-options.json --region $REGION >> $LOG_FILE 2>&1 || echo "   -> EB Environment already exists." | tee -a $LOG_FILE
-
-    echo "   -> Waiting for EB Security Group to generate..." | tee -a $LOG_FILE
-    while true; do
-        EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE || true)
-        if [ "$EB_SG_ID" != "None" ] && [ -n "$EB_SG_ID" ]; then
-            echo "   -> Found Elastic Beanstalk SG: $EB_SG_ID" | tee -a $LOG_FILE
-            break
-        fi
-        sleep 10
-    done
 }
 
 provision_s3() {
@@ -166,6 +92,110 @@ EOF
     echo "   -> Attached IAM access policy to EC2 instance profile." | tee -a $LOG_FILE
 }
 
+provision_efs() {
+    echo "2. Provisioning Elastic File System (EFS) & Subnet Mounts..." | tee -a $LOG_FILE
+    EFS_ID=$(aws efs create-file-system --creation-token MoodleEFS --encrypted --region $REGION --query 'FileSystemId' --output text 2>>$LOG_FILE || aws efs describe-file-systems --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
+    echo "   -> EFS Created: $EFS_ID" | tee -a $LOG_FILE
+
+    # Get Default VPC and Security Group
+    DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>>$LOG_FILE)
+    DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
+    
+    # Create Mount Targets in all Default Subnets
+    SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" --region $REGION --query "Subnets[*].SubnetId" --output text 2>>$LOG_FILE)
+    for subnet in $SUBNETS; do
+        aws efs create-mount-target --file-system-id $EFS_ID --subnet-id $subnet --security-groups $DEFAULT_SG_ID 2>>$LOG_FILE || echo "   -> Mount target already exists for $subnet" | tee -a $LOG_FILE
+    done
+    export EFS_ID
+}
+
+provision_redis() {
+    echo "3. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling)..." | tee -a $LOG_FILE
+    # Upgraded from cache-cluster to replication-group for Multi-AZ and Autoscaling support
+    aws elasticache create-replication-group \
+        --replication-group-id $REDIS_ID \
+        --replication-group-description "Moodle Redis Cluster" \
+        --engine redis \
+        --cache-node-type cache.t4g.micro \
+        --num-cache-clusters 2 \
+        --automatic-failover-enabled \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Replication Group already exists." | tee -a $LOG_FILE
+    
+    # Register Redis for Autoscaling (Scale replicas based on CPU)
+    aws application-autoscaling register-scalable-target \
+        --service-namespace elasticache \
+        --resource-id replication-group/$REDIS_ID \
+        --scalable-dimension elasticache:replication-group:NodeGroups \
+        --min-capacity 1 --max-capacity 3 >> $LOG_FILE 2>&1 || true
+    echo "   -> Redis cluster and application autoscaling initiated." | tee -a $LOG_FILE
+}
+
+provision_aurora() {
+    echo "4. Provisioning Aurora Serverless v2 (MySQL 8.4)..." | tee -a $LOG_FILE
+
+    # 4.1 Create Custom DB Cluster Parameter Group to disable strict FK checks in MySQL 8.4
+    aws rds create-db-cluster-parameter-group \
+        --db-cluster-parameter-group-name $DB_PARAM_GROUP \
+        --db-parameter-group-family aurora-mysql8.4 \
+        --description "Moodle overrides for MySQL 8.4" \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Parameter group exists." | tee -a $LOG_FILE
+
+    aws rds modify-db-cluster-parameter-group \
+        --db-cluster-parameter-group-name $DB_PARAM_GROUP \
+        --parameters "ParameterName=restrict_fk_on_non_standard_key,ParameterValue=OFF,ApplyMethod=immediate" \
+        --region $REGION >> $LOG_FILE 2>&1 || true
+
+    # 4.2 Provision Cluster and Instance
+    aws rds create-db-cluster \
+        --db-cluster-identifier $DB_CLUSTER_ID \
+        --engine aurora-mysql \
+        --engine-version 8.4.mysql_aurora.8.4.8 \
+        --master-username moodleadmin \
+        --master-user-password TempPassword123\! \
+        --db-cluster-parameter-group-name $DB_PARAM_GROUP \
+        --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=16.0 \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Cluster exists." | tee -a $LOG_FILE
+
+    aws rds create-db-instance \
+        --db-instance-identifier $DB_INSTANCE_ID \
+        --db-cluster-identifier $DB_CLUSTER_ID \
+        --engine aurora-mysql \
+        --db-instance-class db.serverless \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Instance exists." | tee -a $LOG_FILE
+}
+
+provision_eb() {
+    echo "5. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70%)..." | tee -a $LOG_FILE
+    aws elasticbeanstalk create-application --application-name $APP_NAME --region $REGION >> $LOG_FILE 2>&1 || true
+
+    # Generate EB Autoscaling Options
+    cat << 'EOF' > eb-options.json
+[
+  {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
+  {"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
+  {"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "2"},
+  {"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "6"},
+  {"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
+  {"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
+  {"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
+  {"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"}
+]
+EOF
+
+    STACK_NAME=$(aws elasticbeanstalk list-available-solution-stacks --region $REGION --query "SolutionStacks[?contains(@, 'running PHP 8.3')] | [0]" --output text 2>>$LOG_FILE)
+    aws elasticbeanstalk create-environment --application-name $APP_NAME --environment-name $ENV_NAME --solution-stack-name "$STACK_NAME" --option-settings file://eb-options.json --region $REGION >> $LOG_FILE 2>&1 || echo "   -> EB Environment already exists." | tee -a $LOG_FILE
+
+    echo "   -> Waiting for EB Security Group to generate..." | tee -a $LOG_FILE
+    while true; do
+        EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE || true)
+        if [ "$EB_SG_ID" != "None" ] && [ -n "$EB_SG_ID" ]; then
+            echo "   -> Found Elastic Beanstalk SG: $EB_SG_ID" | tee -a $LOG_FILE
+            break
+        fi
+        sleep 10
+    done
+}
+
 apply_security() {
     echo "6. Applying Network Security Group Bindings..." | tee -a $LOG_FILE
     EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
@@ -206,7 +236,8 @@ files:
     owner: root
     group: root
     content: |
-      display_errors = On
+      display_errors = Off
+      max_input_vars = 5000
       upload_max_filesize = 128M
       post_max_size = 128M
       max_execution_time = 300
@@ -260,23 +291,18 @@ jobs:
         deployment_package: HEAD
 EOF
 
-    # 7.4 Moodle PHP Extension Dependencies
+    # 7.4 Moodle PHP Extension Dependencies (Explicit Version-Namespaced AL2023 Package Names)
     cat << 'EOF' > .ebextensions/03-php-modules.config
-    packages:
-    yum:
+packages:
+  yum:
     php8.3-gd: []
     php8.3-intl: []
     php8.3-mbstring: []
     php8.3-soap: []
     php8.3-xml: []
-    php8.3-sodium: []
+    php8.3-process: []
+    php8.3-opcache: []
     php8.3-pecl-redis6: []
-    php8.3-curl: []
-    php8.3-zip: []
-    php8.3-soap: []
-    php8.3-ldap: []
-    php8.3-xmlrpc: []
-    php8.3-openssl: []
     ghostscript: []
 EOF
 
@@ -308,7 +334,7 @@ files:
       #!/bin/bash
       LOCK_DIR="/mnt/moodledata/cron-lock"
       if mkdir "$LOCK_DIR" 2>/dev/null; then
-          sudo -u webapp /usr/bin/php /var/app/current/admin/cli/cron.php > /dev/null 2>&1
+          sudo -u webapp /usr/bin/php /var/app/current/public/admin/cli/cron.php > /dev/null 2>&1
           rmdir "$LOCK_DIR"
       else
           if [ -n "$(find "$LOCK_DIR" -prune -mmin +15 2>/dev/null)" ]; then
