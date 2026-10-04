@@ -277,6 +277,7 @@ EOF
     php8.3-ldap: []
     php8.3-xmlrpc: []
     php8.3-openssl: []
+    ghostscript: []
 EOF
 
     # 7.5 PHP-FPM Worker Tuning
