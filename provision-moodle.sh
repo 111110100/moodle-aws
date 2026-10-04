@@ -214,7 +214,7 @@ apply_security() {
 generate_codebase() {
     echo "7. Generating Repository Configuration Files..." | tee -a $LOG_FILE
     
-    # 7.1 .ebextensions
+    # 7.1 EFS Mount
     mkdir -p .ebextensions
     cat << EOF > .ebextensions/01-efs-mount.config
 packages:
@@ -229,6 +229,7 @@ commands:
       chmod 777 /mnt/moodledata
 EOF
 
+    # 7.2 PHP ini settings
     cat << 'EOF' > .ebextensions/02-php-settings.config
 files:
   "/etc/php.d/99-moodle.ini":
@@ -245,7 +246,7 @@ files:
       opcache.enable = 1
 EOF
 
-    # 7.2 Nginx Configuration for Moodle
+    # 7.3 Nginx Configuration for Moodle
     mkdir -p .platform/nginx/conf.d/elasticbeanstalk
     cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/moodle.conf
     # 1. Block access to hidden files and directories (like .git, .env)
