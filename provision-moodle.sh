@@ -6,11 +6,14 @@ set -o pipefail
 LOG_FILE="moodle_aws_setup.log"
 REGION="ap-southeast-2"
 APP_NAME="MaruMoodleLMS"
-ENV_NAME="MaruMoodle-Prod-v2"
+ENV_NAME="MaruMoodle-Prod"
 DB_CLUSTER_ID="maru-moodle-db"
 DB_INSTANCE_ID="maru-moodle-db-instance"
 DB_PARAM_GROUP="moodle-aurora-mysql84-params"
+DB_USERNAME="moodleadmin"
+DB_PASSWORD="Temp123()"
 REDIS_ID="maru-moodle-redis"
+WWWROOT="http://changeme.com" # ADDED: New WWWROOT variable Change this value to you load balancer in EC2. Replace this with your domain once in production.
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle..." | tee -a $LOG_FILE
@@ -37,6 +40,8 @@ EOF
     aws iam create-role --role-name aws-elasticbeanstalk-ec2-role --assume-role-policy-document file://ec2-trust-policy.json 2>>$LOG_FILE || echo "   -> Role already exists." | tee -a $LOG_FILE
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>>$LOG_FILE || true
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy 2>>$LOG_FILE || true
+    # ADDED: EFS Mount Target visibility policy
+    aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonElasticFileSystemClientReadWriteAccess 2>>$LOG_FILE || true
     
     # 1.3 Create Instance Profile and link Role
     aws iam create-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || echo "   -> Instance profile exists." | tee -a $LOG_FILE
@@ -101,6 +106,14 @@ provision_efs() {
     DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>>$LOG_FILE)
     DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
     
+    # ADDED: Ensure VPC DNS attributes are active for EFS DNS resolution
+    aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-support '{"Value":true}' 2>>$LOG_FILE || true
+    aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-hostnames '{"Value":true}' 2>>$LOG_FILE || true
+
+    # ADDED: Allow VPC CIDR ingress on port 2049 to prevent EB boot timeouts
+    VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids $DEFAULT_VPC_ID --query "Vpcs[0].CidrBlock" --output text 2>>$LOG_FILE)
+    aws ec2 authorize-security-group-ingress --region $REGION --group-id $DEFAULT_SG_ID --protocol tcp --port 2049 --cidr $VPC_CIDR 2>>$LOG_FILE || true
+
     # Create Mount Targets in all Default Subnets
     SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" --region $REGION --query "Subnets[*].SubnetId" --output text 2>>$LOG_FILE)
     for subnet in $SUBNETS; do
@@ -150,8 +163,8 @@ provision_aurora() {
         --db-cluster-identifier $DB_CLUSTER_ID \
         --engine aurora-mysql \
         --engine-version 8.4.mysql_aurora.8.4.8 \
-        --master-username moodleadmin \
-        --master-user-password TempPassword123\! \
+        --master-username $DB_USERNAME \
+        --master-user-password $DB_PASSWORD \
         --db-cluster-parameter-group-name $DB_PARAM_GROUP \
         --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=16.0 \
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Cluster exists." | tee -a $LOG_FILE
@@ -213,13 +226,19 @@ apply_security() {
 
 generate_codebase() {
     echo "7. Generating Repository Configuration Files..." | tee -a $LOG_FILE
+
+    # Fetch dynamic endpoints from AWS
+    echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
+    DB_HOST=$(aws rds describe-db-clusters --db-cluster-identifier $DB_CLUSTER_ID --region $REGION --query "DBClusters[0].Endpoint" --output text)
+    REDIS_HOST=$(aws elasticache describe-replication-groups --replication-group-id $REDIS_ID --region $REGION --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" --output text)
     
-    # 7.1 EFS Mount
+    # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     mkdir -p .ebextensions
     cat << EOF > .ebextensions/01-efs-mount.config
 packages:
   yum:
     amazon-efs-utils: []
+    python3-botocore: []
 commands:
   01_mount_efs:
     command: |
@@ -268,9 +287,20 @@ EOF
     }
 EOF
 
-    # 7.3 GitHub Actions
+    # ADDED: Nginx Upload & Buffer Limits
+    mkdir -p .platform/nginx/conf.d
+    cat << 'EOF' > .platform/nginx/conf.d/99-moodle-limits.conf
+    client_max_body_size 128M;
+    client_body_buffer_size 128M;
+    fastcgi_buffers 16 32k;
+    fastcgi_buffer_size 32k;
+    proxy_buffer_size 32k;
+    proxy_buffers 16 32k;
+EOF
+
+    # 7.4 GitHub Actions
     mkdir -p .github/workflows
-    cat << 'EOF' > .github/workflows/deploy.yml
+    envsubst '$APP_NAME $ENV_NAME' << 'EOF' > .github/workflows/deploy.yml
 name: Deploy Moodle to AWS Elastic Beanstalk
 on:
   push:
@@ -285,14 +315,14 @@ jobs:
       with:
         aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        application_name: MaruMoodleLMS
-        environment_name: MaruMoodle-Prod-v2
+        application_name: $APP_NAME
+        environment_name: $ENV_NAME
         version_label: ${{ github.sha }}
         region: ap-southeast-2
         deployment_package: HEAD
 EOF
 
-    # 7.4 Moodle PHP Extension Dependencies (Explicit Version-Namespaced AL2023 Package Names)
+    # 7.5 Moodle PHP Extension Dependencies
     cat << 'EOF' > .ebextensions/03-php-modules.config
 packages:
   yum:
@@ -307,7 +337,7 @@ packages:
     ghostscript: []
 EOF
 
-    # 7.5 PHP-FPM Worker Tuning
+    # 7.6 PHP-FPM Worker Tuning
     cat << 'EOF' > .ebextensions/04-php-fpm.config
 files:
   "/etc/php-fpm.d/z-moodle.conf":
@@ -324,7 +354,7 @@ files:
       pm.max_requests = 500
 EOF
 
-    # 7.6 EFS-Locked Cron Job
+    # 7.7 EFS-Locked Cron Job
     cat << 'EOF' > .ebextensions/05-cron.config
 files:
   "/usr/local/bin/moodle-cron.sh":
@@ -351,28 +381,60 @@ files:
       * * * * * root /usr/local/bin/moodle-cron.sh
 EOF
 
-    # 7.7 Environment Config
+    # 7.8 Environment Config
     cat << 'EOF' > .ebextensions/00-environment.config
 option_settings:
   aws:elasticbeanstalk:command:
     Timeout: 1800
 EOF
 
-    # 7.8 Document root
+    # 7.9 Document root
     cat << 'EOF' > .ebextensions/06-document-root.config
 option_settings:
   aws:elasticbeanstalk:container:php:phpini:
     document_root: /public
 EOF
 
-    # 7.9 Diagnostic PHP Script
-    cat << 'EOF' > sys-test.php
+    # ADDED: Moodle Config Generation (Note the unquoted EOF to allow variable injection)
+    envsubst '$DB_HOST $WWWROOT' << 'EOF' > config.php
+<?php
+unset($CFG);
+global $CFG;
+$CFG = new stdClass();
+
+$CFG->dbtype     = 'auroramysql';
+$CFG->dblibrary  = 'native';
+$CFG->dbhost     = '$DB_HOST';
+$CFG->dbname     = 'moodle';
+$CFG->dbuser     = '$DB_USERNAME';
+$CFG->dbpass     = '$DB_PASSWORD';
+$CFG->prefix     = 'mdl_';
+$CFG->dboptions = array (
+  'dbpersist' => 0,
+  'dbport' => 3306,
+  'dbsocket' => '',
+  'dbcollation' => 'utf8mb4_unicode_ci',
+);
+
+$CFG->wwwroot    = '$WWWROOT';
+$CFG->dataroot  = '/mnt/moodledata';
+$CFG->admin  = 'admin';
+$CFG->directorypermissions = 0777;
+
+$CFG->localcachedir = '/tmp/moodle-localcache';
+$CFG->dbsessions = 1;
+
+require_once(__DIR__ . '/lib/setup.php');
+EOF
+
+    # 7.10 Diagnostic PHP Script (Note the unquoted EOF)
+    envsubst '$REDIS_HOST $DB_HOST $DB_USERNAME $DB_PASSWORD' << 'EOF' > sys-test.php
 <?php
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 echo "<h3>1. Testing Redis Connection</h3>";
-$redis_endpoint = "maru-moodle-redis.XXXXXX.ng.0001.apse2.cache.amazonaws.com"; // Replace XXXXXX with actual primary endpoint
+$redis_endpoint = "$REDIS_HOST";
 
 if (class_exists('Redis')) {
     $redis = new Redis();
@@ -381,25 +443,29 @@ if (class_exists('Redis')) {
     } else {
         echo "<strong style='color:red;'>Failed to connect to Redis.</strong><br>";
     }
-} else { echo "<strong style='color:red;'>Redis extension missing.</strong><br>"; }
+} else {
+    echo "<strong style='color:red;'>Redis extension missing.</strong><br>";
+}
 
 echo "<h3>2. Testing Aurora MySQL (SSL)</h3>";
-$ip = gethostbyname("maru-moodle-db.cluster-crkc8w28olh1.ap-southeast-2.rds.amazonaws.com");
+$ip = gethostbyname("$DB_HOST");
 $mysqli = mysqli_init();
 $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 5);
-if (@$mysqli->real_connect($ip, "moodleadmin", "TempPassword123!", "moodle", 3306, null, MYSQLI_CLIENT_SSL)) {
+if (@$mysqli->real_connect($ip, "$DB_USERNAME", "$DB_PASSWORD", "moodle", 3306, null, MYSQLI_CLIENT_SSL)) {
     echo "<strong style='color:green;'>Connected to Aurora MySQL!</strong><br>";
-} else { echo "<strong style='color:red;'>MySQL Connection Failed: </strong>" . mysqli_connect_error() . "<br>"; }
+} else {
+    echo "<strong style='color:red;'>MySQL Connection Failed: </strong>" . mysqli_connect_error() . "<br>";
+}
 
 echo "<h3>3. Testing EFS Mount</h3>";
 $efs_path = '/mnt/moodledata';
 if (is_dir($efs_path) && is_writable($efs_path)) {
     echo "<strong style='color:green;'>EFS Mount is writable!</strong><br>";
-} else { echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>"; }
+} else {
+    echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>";
+}
 ?>
 EOF
-    echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
-}
 
 # ======================================================================
 # EXECUTION MODULES
