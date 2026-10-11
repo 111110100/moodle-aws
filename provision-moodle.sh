@@ -3,17 +3,17 @@
 set -e 
 set -o pipefail
 
-LOG_FILE="moodle_aws_setup.log"
-REGION="ap-southeast-2"
-APP_NAME="MaruMoodleLMS"
-ENV_NAME="MaruMoodle-Prod"
-DB_CLUSTER_ID="maru-moodle-db"
-DB_INSTANCE_ID="maru-moodle-db-instance"
-DB_PARAM_GROUP="moodle-aurora-mysql84-params"
-DB_USERNAME="moodleadmin"
-DB_PASSWORD="Temp123()"
-REDIS_ID="maru-moodle-redis"
-WWWROOT="http://changeme.com" # ADDED: New WWWROOT variable Change this value to you load balancer in EC2. Replace this with your domain once in production.
+export LOG_FILE="moodle_aws_setup.log"
+export REGION="ap-southeast-2"
+export APP_NAME="MaruMoodleLMS"
+export ENV_NAME="MaruMoodle-Prod"
+export DB_CLUSTER_ID="maru-moodle-db"
+export DB_INSTANCE_ID="maru-moodle-db-instance"
+export DB_PARAM_GROUP="moodle-aurora-mysql84-params"
+export DB_USERNAME="moodleadmin"
+export DB_PASSWORD="Temp123()"
+export REDIS_ID="maru-moodle-redis"
+export WWWROOT="http://changeme.com"
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle..." | tee -a $LOG_FILE
@@ -229,8 +229,8 @@ generate_codebase() {
 
     # Fetch dynamic endpoints from AWS
     echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
-    DB_HOST=$(aws rds describe-db-clusters --db-cluster-identifier $DB_CLUSTER_ID --region $REGION --query "DBClusters[0].Endpoint" --output text)
-    REDIS_HOST=$(aws elasticache describe-replication-groups --replication-group-id $REDIS_ID --region $REGION --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" --output text)
+    export DB_HOST=$(aws rds describe-db-clusters --db-cluster-identifier $DB_CLUSTER_ID --region $REGION --query "DBClusters[0].Endpoint" --output text)
+    export REDIS_HOST=$(aws elasticache describe-replication-groups --replication-group-id $REDIS_ID --region $REGION --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" --output text)
     
     # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     mkdir -p .ebextensions
@@ -396,7 +396,7 @@ option_settings:
 EOF
 
     # ADDED: Moodle Config Generation (Note the unquoted EOF to allow variable injection)
-    envsubst '$DB_HOST $WWWROOT' << 'EOF' > config.php
+    envsubst '$DB_HOST $DB_USERNAME $DB_PASSWORD $WWWROOT' << 'EOF' > config.php
 <?php
 unset($CFG);
 global $CFG;
@@ -466,6 +466,8 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
 }
 ?>
 EOF
+    echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
+}
 
 # ======================================================================
 # EXECUTION MODULES
