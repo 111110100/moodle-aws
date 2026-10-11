@@ -467,7 +467,7 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
 ?>
 EOF
 
-    # 7.12 Override the default Elastic Beanstalk PHP handler to support Moodle routing
+    # 7.X Override the default Elastic Beanstalk PHP handler to support Moodle routing
     cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/php.conf
 # This file is managed by Elastic Beanstalk, overridden for Moodle 5.2 routing
 root /var/www/html/public;
@@ -476,6 +476,10 @@ index index.php index.html index.htm;
 
 location ~ \.(php|phar)(/.*)?$ {
     fastcgi_split_path_info ^(.+\.(?:php|phar))(/.*)$;
+
+    # Preserve path info before try_files clears it
+    set $path_info $fastcgi_path_info;
+    try_files $fastcgi_script_name $fastcgi_script_name/ /r.php$is_args$args;
 
     fastcgi_intercept_errors on;
     fastcgi_index  index.php;
@@ -506,9 +510,10 @@ location ~ \.(php|phar)(/.*)?$ {
     fastcgi_param  REDIRECT_STATUS    200;
 
     fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
-    fastcgi_param  PATH_INFO $fastcgi_path_info;
+    
+    # Pass the preserved path_info variable to PHP-FPM
+    fastcgi_param  PATH_INFO $path_info;
     fastcgi_pass   php-fpm;
-    try_files $fastcgi_script_name $fastcgi_script_name/ /r.php$is_args$args;
 }
 EOF
 
