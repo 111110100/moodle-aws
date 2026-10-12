@@ -53,6 +53,48 @@ EOF
     
     echo "   -> Generating Deployment Keys (Saved to github_deploy_keys.json)..." | tee -a $LOG_FILE
     aws iam create-access-key --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
+
+    # 1.4 Create GitHub Actions Deployment User with LEAST PRIVILEGE
+    aws iam create-user --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
+
+    # Scoped inline policy restricting the user strictly to EB deployment commands
+    cat << 'EOF' > eb-deploy-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticbeanstalk:CreateApplicationVersion",
+        "elasticbeanstalk:UpdateEnvironment",
+        "elasticbeanstalk:DescribeEnvironments",
+        "elasticbeanstalk:DescribeEvents",
+        "elasticbeanstalk:DescribeApplicationVersions",
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:GetObjectAcl",
+        "s3:PutObjectAcl",
+        "s3:ListBucket",
+        "s3:DeleteObject",
+        "s3:GetBucketPolicy"
+      ],
+      "Resource": [
+        "arn:aws:elasticbeanstalk:ap-southeast-2:*:application/MaruMoodleLMS",
+        "arn:aws:elasticbeanstalk:ap-southeast-2:*:environment/MaruMoodleLMS/*",
+        "arn:aws:elasticbeanstalk:ap-southeast-2:*:applicationversion/MaruMoodleLMS/*",
+        "arn:aws:s3:::elasticbeanstalk-ap-southeast-2-*",
+        "arn:aws:s3:::elasticbeanstalk-ap-southeast-2-*/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "elasticbeanstalk:CheckDNSAvailability",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+    aws iam put-user-policy --user-name github-actions-moodle-deploy --policy-name EBDeployPolicy --policy-document file://eb-deploy-policy.json 2>>$LOG_FILE || true
 }
 
 provision_s3() {
