@@ -1,6 +1,6 @@
 #!/bin/bash
 # Exit immediately if a command fails, but allow specific expected duplicates (like IAM roles/rules) to bypass.
-set -e 
+set -e
 set -o pipefail
 
 export LOG_FILE="moodle_aws_setup.log"
@@ -21,7 +21,7 @@ echo "=====================================================================" | t
 
 setup_iam() {
     echo "1. Configuring IAM Roles & Instance Profiles..." | tee -a $LOG_FILE
-    
+
     # 1.1 Create EC2 Trust Policy
     cat << 'EOF' > ec2-trust-policy.json
 {
@@ -35,14 +35,14 @@ setup_iam() {
   ]
 }
 EOF
-    
+
     # 1.2 Create EB EC2 Role & Attach Managed Policies (Including SSM Default Policy for Session Manager)
     aws iam create-role --role-name aws-elasticbeanstalk-ec2-role --assume-role-policy-document file://ec2-trust-policy.json 2>>$LOG_FILE || echo "   -> Role already exists." | tee -a $LOG_FILE
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>>$LOG_FILE || true
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy 2>>$LOG_FILE || true
     # ADDED: EFS Mount Target visibility policy
     aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonElasticFileSystemClientReadWriteAccess 2>>$LOG_FILE || true
-    
+
     # 1.3 Create Instance Profile and link Role
     aws iam create-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || echo "   -> Instance profile exists." | tee -a $LOG_FILE
     aws iam add-role-to-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role --role-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || true
@@ -50,7 +50,7 @@ EOF
     # 1.4 Create GitHub Actions Deployment User & Output Keys
     aws iam create-user --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
     aws iam attach-user-policy --user-name github-actions-moodle-deploy --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkAdministrator 2>>$LOG_FILE || true
-    
+
     echo "   -> Generating Deployment Keys (Saved to github_deploy_keys.json)..." | tee -a $LOG_FILE
     aws iam create-access-key --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
 
@@ -147,7 +147,7 @@ provision_efs() {
     # Get Default VPC and Security Group
     DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>>$LOG_FILE)
     DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
-    
+
     # ADDED: Ensure VPC DNS attributes are active for EFS DNS resolution
     aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-support '{"Value":true}' 2>>$LOG_FILE || true
     aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-hostnames '{"Value":true}' 2>>$LOG_FILE || true
@@ -175,7 +175,7 @@ provision_redis() {
         --num-cache-clusters 2 \
         --automatic-failover-enabled \
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Replication Group already exists." | tee -a $LOG_FILE
-    
+
     # Register Redis for Autoscaling (Scale replicas based on CPU)
     aws application-autoscaling register-scalable-target \
         --service-namespace elasticache \
@@ -273,7 +273,7 @@ generate_codebase() {
     echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
     export DB_HOST=$(aws rds describe-db-clusters --db-cluster-identifier $DB_CLUSTER_ID --region $REGION --query "DBClusters[0].Endpoint" --output text)
     export REDIS_HOST=$(aws elasticache describe-replication-groups --replication-group-id $REDIS_ID --region $REGION --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" --output text)
-    
+
     # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     mkdir -p .ebextensions
     cat << EOF > .ebextensions/01-efs-mount.config
@@ -552,7 +552,7 @@ location ~ \.(php|phar)(/.*)?$ {
     fastcgi_param  REDIRECT_STATUS    200;
 
     fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
-    
+
     # Pass the preserved path_info variable to PHP-FPM
     fastcgi_param  PATH_INFO $path_info;
     fastcgi_pass   php-fpm;
