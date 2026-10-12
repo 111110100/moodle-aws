@@ -98,7 +98,7 @@ EOF
 }
 
 provision_s3() {
-    echo "X. Provisioning Dedicated S3 Bucket..." | tee -a $LOG_FILE
+    echo "2. Provisioning Dedicated S3 Bucket..." | tee -a $LOG_FILE
 
     # Generate a globally unique bucket name
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -140,7 +140,7 @@ EOF
 }
 
 provision_efs() {
-    echo "2. Provisioning Elastic File System (EFS) & Subnet Mounts..." | tee -a $LOG_FILE
+    echo "3. Provisioning Elastic File System (EFS) & Subnet Mounts..." | tee -a $LOG_FILE
     EFS_ID=$(aws efs create-file-system --creation-token MoodleEFS --encrypted --region $REGION --query 'FileSystemId' --output text 2>>$LOG_FILE || aws efs describe-file-systems --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
     echo "   -> EFS Created: $EFS_ID" | tee -a $LOG_FILE
 
@@ -165,7 +165,7 @@ provision_efs() {
 }
 
 provision_redis() {
-    echo "3. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling)..." | tee -a $LOG_FILE
+    echo "4. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling)..." | tee -a $LOG_FILE
     # Upgraded from cache-cluster to replication-group for Multi-AZ and Autoscaling support
     aws elasticache create-replication-group \
         --replication-group-id $REDIS_ID \
@@ -186,7 +186,7 @@ provision_redis() {
 }
 
 provision_aurora() {
-    echo "4. Provisioning Aurora Serverless v2 (MySQL 8.4)..." | tee -a $LOG_FILE
+    echo "5. Provisioning Aurora Serverless v2 (MySQL 8.4)..." | tee -a $LOG_FILE
 
     # 4.1 Create Custom DB Cluster Parameter Group to disable strict FK checks in MySQL 8.4
     aws rds create-db-cluster-parameter-group \
@@ -220,7 +220,7 @@ provision_aurora() {
 }
 
 provision_eb() {
-    echo "5. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70%)..." | tee -a $LOG_FILE
+    echo "6. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70%)..." | tee -a $LOG_FILE
     aws elasticbeanstalk create-application --application-name $APP_NAME --region $REGION >> $LOG_FILE 2>&1 || true
 
     # Generate EB Autoscaling Options
@@ -252,7 +252,7 @@ EOF
 }
 
 apply_security() {
-    echo "6. Applying Network Security Group Bindings..." | tee -a $LOG_FILE
+    echo "7. Applying Network Security Group Bindings..." | tee -a $LOG_FILE
     EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
     DEFAULT_VPC_ID=$(aws ec2 describe-security-groups --group-ids $EB_SG_ID --region $REGION --query "SecurityGroups[0].VpcId" --output text 2>>$LOG_FILE)
     DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
@@ -267,7 +267,7 @@ apply_security() {
 }
 
 generate_codebase() {
-    echo "7. Generating Repository Configuration Files..." | tee -a $LOG_FILE
+    echo "8. Generating Repository Configuration Files..." | tee -a $LOG_FILE
 
     # Fetch dynamic endpoints from AWS
     echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
