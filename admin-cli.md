@@ -12,7 +12,6 @@ Wipes Moodle's UI, theme, and language caches, forcing the system to rebuild the
 
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/purge_caches.php
-
 ```
 
 ### 2. Force Moodle Cron
@@ -21,7 +20,6 @@ Executes the main Moodle cron process manually. This handles all standard backgr
 
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/cron.php
-
 ```
 
 ### 3. Execute a Specific Scheduled Task
@@ -31,17 +29,13 @@ Sometimes you cannot wait for the main cron cycle. This command allows you to fo
 * **Example (File Trash Cleanup):** Forces Moodle to permanently delete orphaned files from the EFS drive's `trashdir` so you can upload a clean version.
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/scheduled_task.php --execute="\core\task\file_trash_cleanup_task"
-
 ```
 
 
 * **Example (Course Module Deletion):** Flushes the queue for asynchronously deleting course modules if the web UI deletion process gets stuck.
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/scheduled_task.php --execute="\core_course\task\course_delete_modules"
-
 ```
-
-
 
 ### 4. Delete a Specific Course
 
@@ -49,7 +43,6 @@ Bypasses the web interface and background cron to forcefully delete a course and
 
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/delete_course.php --courseid=4
-
 ```
 
 *(Replace `4` with the ID of the course you wish to delete).*
@@ -80,7 +73,6 @@ sudo -u webapp php /var/app/current/admin/cli/maintenance.php --enable
 
 # Turn maintenance mode OFF
 sudo -u webapp php /var/app/current/admin/cli/maintenance.php --disable
-
 ```
 
 ### 6. Upgrade Moodle
@@ -89,7 +81,6 @@ Runs the Moodle database upgrade process. If you deploy a new version of Moodle 
 
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/upgrade.php --non-interactive
-
 ```
 
 ### 7. Reset a User's Password
@@ -126,3 +117,35 @@ sudo -u webapp php /var/app/current/admin/cli/uninstall_plugins.php --show-missi
 sudo -u webapp php /var/app/current/admin/cli/uninstall_plugins.php --purge-missing --run
 
 ```
+
+## Part 3 Essential Linux commands
+
+### 1. journalctl
+```bash
+journalctl -p err -b
+```
+Shows errors from the current boot
+
+### 2. systemctl
+```bash
+systemctl --failed
+```
+Shows services that have failed
+
+### 3. ss
+```bash
+ss -tulpn
+```
+Shows listening ports and processes using them
+
+### 4. du
+```bash
+du -xh --max-depth=1
+```
+Helps you figure out what's eating disk space
+
+### 5. dmesg
+```bash
+dmesg | tail
+```
+Displays kernel messages
