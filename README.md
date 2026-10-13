@@ -60,6 +60,13 @@ An auditing tool to confirm your AWS environment is completely clear of billable
 * Scans the active region for EC2 instances, RDS databases, ElastiCache nodes, EFS volumes, ALBs, NAT Gateways, and Elastic IPs.
 * Outputs a clean, formatted table of active resources directly to the terminal while logging details to `billing_verification.log`.
 
+### 5. `update-moodle.sh`
+
+A tool to update your local git repo of Moodle before pushing it to your GitHub repo before running GitHub Actions to push it to AWS Beanstalk.
+
+* Accepts two parameters: `--source` and `--dest`. `--source` points to the .tar.gz of Moodle and `--dest` points to hour local git of Moodle.
+* Edit the script and look for the `EXCLUTIONS` area to exclude the script from overwriting certain files of your local git. For example custom themes or mods.
+
 ---
 
 ## Usage Instructions
