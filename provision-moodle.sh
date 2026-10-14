@@ -312,7 +312,8 @@ EOF
     cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/moodle.conf
     # Trust AWS ALB proxy headers and extract Cloudflare's isolated client IP
     set_real_ip_from 10.0.0.0/8;
-    real_ip_header CF-Connecting-IP;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
 
     # Pass HTTPS protocol variables down to PHP-FPM
     fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
@@ -528,13 +529,15 @@ $CFG->admin     = 'admin';
 
 $CFG->directorypermissions = 0777;
 
+// Tell Moodle to pull the true IP directly from Cloudflare's isolated header
+$CFG->getremoteaddrconf = 'HTTP_CF_CONNECTING_IP';
+
 # Required for Auto-scaling setups
 $CFG->localcachedir = '/tmp/moodle-localcache';
 $CFG->dbsessions    = 1;
 
 # Required for HTTPS and AWS LB setups
 $CFG->sslproxy      = true;
-$CFG->reverseproxy  = true;
 
 # Required for Moodle router
 $CFG->routerconfigured = true;
