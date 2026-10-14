@@ -310,22 +310,86 @@ EOF
     # 7.3 Nginx Configuration for Moodle
     mkdir -p .platform/nginx/conf.d/elasticbeanstalk
     cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/moodle.conf
+    # Trust AWS ALB proxy headers and extract Cloudflare's isolated client IP
+    set_real_ip_from 10.0.0.0/8;
+    real_ip_header CF-Connecting-IP;
+
+    # Pass HTTPS protocol variables down to PHP-FPM
+    fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+    fastcgi_param HTTP_X_FORWARDED_FOR $http_x_forwarded_for;
+    fastcgi_param HTTPS $http_x_forwarded_proto;
+
     # 1. Block access to hidden files and directories (like .git, .env)
     location ~ /\.(?!well-known).* {
-    deny all;
-    return 404;
+        deny all;
+        return 404;
     }
 
     # 2. Block access to Moodle internal data/system directories
     location ~ ^/(?:temp|cache|local/codechecker)/ {
-    deny all;
-    return 404;
+        deny all;
+        return 404;
     }
 
-    # 3. Handle Moodle slash arguments (fixes broken CSS/JS/images)
-    # If a file isn't found, fallback to Moodle's index or file handlers
+    # 3. Handle Moodle Routing Engine framework fallback
+    # We use a custom named location block to avoid conflicting with Elastic Beanstalk's main context
     location / {
-    try_files $uri $uri/ /index.php$is_args$args;
+        try_files $uri $uri/ /r.php$is_args$args;
+    }
+
+    location ~ (/vendor/|/node_modules/|composer\.json|/readme|/README|readme\.txt|/upgrade\.txt|/UPGRADING\.md|db/install\.xml|/fixtures/|/behat/|phpunit\.xml|\.lock|environment\.xml) {
+        deny all;
+        return 404;
+    }
+EOF
+
+    # ADDED: Adjust PHP CGI settings to make Moodle router work
+    cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/php.conf
+    # This file is managed by Elastic Beanstalk, overridden for Moodle 5.2 routing
+    root /var/www/html/public;
+
+    index index.php index.html index.htm;
+
+    location ~ \.(php|phar)(/.*)?$ {
+        fastcgi_split_path_info ^(.+\.(?:php|phar))(/.*)$;
+
+        # Preserve path info before try_files clears it
+        set $path_info $fastcgi_path_info;
+        try_files $fastcgi_script_name $fastcgi_script_name/ /r.php$is_args$args;
+
+        fastcgi_intercept_errors on;
+        fastcgi_index  index.php;
+
+        fastcgi_param  QUERY_STRING       $query_string;
+        fastcgi_param  REQUEST_METHOD     $request_method;
+        fastcgi_param  CONTENT_TYPE       $content_type;
+        fastcgi_param  CONTENT_LENGTH     $content_length;
+
+        fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
+        fastcgi_param  REQUEST_URI        $request_uri;
+        fastcgi_param  DOCUMENT_URI       $document_uri;
+        fastcgi_param  DOCUMENT_ROOT      $document_root;
+        fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+        fastcgi_param  REQUEST_SCHEME     $scheme;
+        fastcgi_param  HTTPS              $https if_not_empty;
+
+        fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+        fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+
+        fastcgi_param  REMOTE_ADDR        $remote_addr;
+        fastcgi_param  REMOTE_PORT        $remote_port;
+        fastcgi_param  SERVER_ADDR        $server_addr;
+        fastcgi_param  SERVER_PORT        $server_port;
+        fastcgi_param  SERVER_NAME        $server_name;
+
+        # PHP only, required if PHP was built with --enable-force-cgi-redirect
+        fastcgi_param  REDIRECT_STATUS    200;
+
+        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+
+        # Pass the preserved path_info variable to PHP-FPM
+        fastcgi_param  PATH_INFO $path_info;
+        fastcgi_pass   php-fpm;
     }
 EOF
 
@@ -458,15 +522,29 @@ $CFG->dboptions = array (
   'dbcollation' => 'utf8mb4_unicode_ci',
 );
 
-$CFG->wwwroot    = '$WWWROOT';
+$CFG->wwwroot   = '$WWWROOT';
 $CFG->dataroot  = '/mnt/moodledata';
-$CFG->admin  = 'admin';
+$CFG->admin     = 'admin';
+
 $CFG->directorypermissions = 0777;
 
+# Required for Auto-scaling setups
 $CFG->localcachedir = '/tmp/moodle-localcache';
-$CFG->dbsessions = 1;
+$CFG->dbsessions    = 1;
+
+# Required for HTTPS and AWS LB setups
+$CFG->sslproxy      = true;
+$CFG->reverseproxy  = true;
+
+# Required for Moodle router
+$CFG->routerconfigured = true;
+
+# Comment these for prod servers
+$CFG->debug = (E_ALL | E_STRICT);
+$CFG->debugdisplay = 1;
 
 require_once(__DIR__ . '/lib/setup.php');
+
 EOF
 
     # 7.11 Diagnostic PHP Script (Note the unquoted EOF)
