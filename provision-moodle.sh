@@ -526,11 +526,7 @@ $CFG->dboptions = array (
 $CFG->wwwroot   = '$WWWROOT';
 $CFG->dataroot  = '/mnt/moodledata';
 $CFG->admin     = 'admin';
-
 $CFG->directorypermissions = 0777;
-
-// Tell Moodle to pull the true IP directly from Cloudflare's isolated header
-// $CFG->getremoteaddrconf = 'HTTP_CF_CONNECTING_IP';
 
 # Required for Auto-scaling setups
 $CFG->localcachedir = '/tmp/moodle-localcache';
