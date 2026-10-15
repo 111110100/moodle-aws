@@ -200,6 +200,11 @@ provision_aurora() {
         --parameters "ParameterName=restrict_fk_on_non_standard_key,ParameterValue=OFF,ApplyMethod=immediate" \
         --region $REGION >> $LOG_FILE 2>&1 || true
 
+    aws rds modify-db-cluster-parameter-group \
+        --db-cluster-parameter-group-name $DB_PARAM_GROUP \
+        --parameters "ParameterName=require_secure_transport,ParameterValue=OFF,ApplyMethod=immediate" \
+        --region $REGION >> $LOG_FILE 2>&1 || true
+
     # 4.2 Provision Cluster and Instance
     aws rds create-db-cluster \
         --db-cluster-identifier $DB_CLUSTER_ID \

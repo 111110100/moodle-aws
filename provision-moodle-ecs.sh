@@ -175,6 +175,11 @@ provision_aurora() {
         --parameters "ParameterName=restrict_fk_on_non_standard_key,ParameterValue=OFF,ApplyMethod=immediate" \
         --region $REGION >> $LOG_FILE 2>&1 || true
 
+    aws rds modify-db-cluster-parameter-group \
+        --db-cluster-parameter-group-name $DB_PARAM_GROUP \
+        --parameters "ParameterName=require_secure_transport,ParameterValue=OFF,ApplyMethod=immediate" \
+        --region $REGION >> $LOG_FILE 2>&1 || true
+
     aws rds create-db-cluster \
         --db-cluster-identifier $DB_CLUSTER_ID --engine aurora-mysql --engine-version 8.4.mysql_aurora.8.4.8 \
         --master-username moodleadmin --master-user-password 'TempPassword123!' \
