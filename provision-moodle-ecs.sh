@@ -342,7 +342,7 @@ CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
 EOF
 
     # 9.2 Nginx Config (UPDATED: Moodle 5.2 Routing & Buffer Limits)
-    cat << 'EOF' > nginx.conf
+    envsubst '$VPC_CIDR' << 'EOF' > nginx.conf
 worker_processes auto;
 events { worker_connections 1024; }
 http {
@@ -361,6 +361,11 @@ http {
 
     server {
         listen 80;
+
+        # Trust AWS ALB proxy headers and extract Cloudflare's isolated client IP
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from $VPC_CIDR;
+        real_ip_header CF-Connecting-IP;
 
         # REQUIRED FOR MOODLE 5.2: Serve from the public directory
         root /var/www/html/public;
@@ -541,8 +546,19 @@ $CFG->dataroot  = '/mnt/moodledata';
 $CFG->admin  = 'admin';
 $CFG->directorypermissions = 0777;
 
+# Required for Auto-scaling setups
 $CFG->localcachedir = '/tmp/moodle-localcache';
 $CFG->dbsessions = 1;
+
+# Required for HTTPS and AWS LB setups
+$CFG->sslproxy      = true;
+
+# Required for Moodle router
+$CFG->routerconfigured = true;
+
+# Comment these for prod servers
+$CFG->debug = (E_ALL | E_STRICT);
+$CFG->debugdisplay = 1;
 
 require_once(__DIR__ . '/lib/setup.php');
 EOF
