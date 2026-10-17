@@ -359,10 +359,16 @@ http {
     # ADDED: Upload Limits & FastCGI Buffers
     client_max_body_size 128M;
     client_body_buffer_size 128M;
-    fastcgi_buffers 16 32k;
-    fastcgi_buffer_size 32k;
-    proxy_buffer_size 32k;
-    proxy_buffers 16 32k;
+
+    # MIME Type Hash Optimizations
+    types_hash_max_size 4096;
+    types_hash_bucket_size 128;
+
+    # Moodle FastCGI Buffer Optimizations
+    fastcgi_buffer_size 64k;
+    fastcgi_buffers 32 32k;
+    fastcgi_busy_buffers_size 128k;
+    fastcgi_max_temp_file_size 0;
 
     server {
         listen 80;
