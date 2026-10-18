@@ -14,6 +14,7 @@ export DB_USERNAME="moodleadmin"
 export DB_PASSWORD="Temp123()"
 export REDIS_ID="maru-moodle-redis"
 export WWWROOT="http://changeme.com"
+export DOMAIN_NAME="changeme.com" # ADDED: Target domain for ACM Certificate provisioning
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle..." | tee -a $LOG_FILE
@@ -37,25 +38,41 @@ setup_iam() {
 EOF
 
     # 1.2 Create EB EC2 Role & Attach Managed Policies (Including SSM Default Policy for Session Manager)
-    aws iam create-role --role-name aws-elasticbeanstalk-ec2-role --assume-role-policy-document file://ec2-trust-policy.json 2>>$LOG_FILE || echo "   -> Role already exists." | tee -a $LOG_FILE
-    aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>>$LOG_FILE || true
-    aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy 2>>$LOG_FILE || true
+    aws iam create-role \
+        --role-name aws-elasticbeanstalk-ec2-role \
+        --assume-role-policy-document file://ec2-trust-policy.json 2>>$LOG_FILE || echo "   -> Role already exists." | tee -a $LOG_FILE
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-ec2-role \
+        --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier 2>>$LOG_FILE || true
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-ec2-role \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy 2>>$LOG_FILE || true
     # ADDED: EFS Mount Target visibility policy
-    aws iam attach-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-arn arn:aws:iam::aws:policy/AmazonElasticFileSystemClientReadWriteAccess 2>>$LOG_FILE || true
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-ec2-role \
+        --policy-arn arn:aws:iam::aws:policy/AmazonElasticFileSystemClientReadWriteAccess 2>>$LOG_FILE || true
 
     # 1.3 Create Instance Profile and link Role
-    aws iam create-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || echo "   -> Instance profile exists." | tee -a $LOG_FILE
-    aws iam add-role-to-instance-profile --instance-profile-name aws-elasticbeanstalk-ec2-role --role-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || true
+    aws iam create-instance-profile \
+        --instance-profile-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || echo "   -> Instance profile exists." | tee -a $LOG_FILE
+    aws iam add-role-to-instance-profile \
+        --instance-profile-name aws-elasticbeanstalk-ec2-role \
+        --role-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || true
 
     # 1.4 Create GitHub Actions Deployment User & Output Keys
-    aws iam create-user --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
-    aws iam attach-user-policy --user-name github-actions-moodle-deploy --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkAdministrator 2>>$LOG_FILE || true
+    aws iam create-user \
+        --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
+    aws iam attach-user-policy \
+        --user-name github-actions-moodle-deploy \
+        --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkAdministrator 2>>$LOG_FILE || true
 
     echo "   -> Generating Deployment Keys (Saved to github_deploy_keys.json)..." | tee -a $LOG_FILE
-    aws iam create-access-key --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
+    aws iam create-access-key \
+        --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
 
     # 1.4 Create GitHub Actions Deployment User with LEAST PRIVILEGE
-    aws iam create-user --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
+    aws iam create-user \
+        --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
 
     # Scoped inline policy restricting the user strictly to EB deployment commands
     cat << 'EOF' > eb-deploy-policy.json
@@ -94,7 +111,10 @@ EOF
   ]
 }
 EOF
-    aws iam put-user-policy --user-name github-actions-moodle-deploy --policy-name EBDeployPolicy --policy-document file://eb-deploy-policy.json 2>>$LOG_FILE || true
+    aws iam put-user-policy \
+        --user-name github-actions-moodle-deploy \
+        --policy-name EBDeployPolicy \
+        --policy-document file://eb-deploy-policy.json 2>>$LOG_FILE || true
 }
 
 provision_s3() {
@@ -135,31 +155,66 @@ provision_s3() {
   ]
 }
 EOF
-    aws iam put-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-name MoodleS3AccessPolicy --policy-document file://s3-access-policy.json 2>>$LOG_FILE || true
+    aws iam put-role-policy \
+        --role-name aws-elasticbeanstalk-ec2-role \
+        --policy-name MoodleS3AccessPolicy \
+        --policy-document file://s3-access-policy.json 2>>$LOG_FILE || true
     echo "   -> Attached IAM access policy to EC2 instance profile." | tee -a $LOG_FILE
 }
 
 provision_efs() {
     echo "3. Provisioning Elastic File System (EFS) & Subnet Mounts..." | tee -a $LOG_FILE
-    EFS_ID=$(aws efs create-file-system --creation-token MoodleEFS --encrypted --region $REGION --query 'FileSystemId' --output text 2>>$LOG_FILE || aws efs describe-file-systems --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
+    EFS_ID=$(aws efs create-file-system \
+        --creation-token MoodleEFS \
+        --encrypted \
+        --region $REGION \
+        --query 'FileSystemId' \
+        --output text 2>>$LOG_FILE || aws efs describe-file-systems --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
     echo "   -> EFS Created: $EFS_ID" | tee -a $LOG_FILE
 
     # Get Default VPC and Security Group
-    DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>>$LOG_FILE)
-    DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
+    DEFAULT_VPC_ID=$(aws ec2 describe-vpcs \
+        --filters "Name=isDefault,Values=true" \
+        --region $REGION \
+        --query "Vpcs[0].VpcId" \
+        --output text 2>>$LOG_FILE)
+    DEFAULT_SG_ID=$(aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" \
+        --region $REGION \
+        --query "SecurityGroups[0].GroupId" \
+        --output text 2>>$LOG_FILE)
 
     # ADDED: Ensure VPC DNS attributes are active for EFS DNS resolution
-    aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-support '{"Value":true}' 2>>$LOG_FILE || true
-    aws ec2 modify-vpc-attribute --vpc-id $DEFAULT_VPC_ID --enable-dns-hostnames '{"Value":true}' 2>>$LOG_FILE || true
+    aws ec2 modify-vpc-attribute \
+        --vpc-id $DEFAULT_VPC_ID \
+        --enable-dns-support '{"Value":true}' 2>>$LOG_FILE || true
+    aws ec2 modify-vpc-attribute \
+        --vpc-id $DEFAULT_VPC_ID \
+        --enable-dns-hostnames '{"Value":true}' 2>>$LOG_FILE || true
 
     # ADDED: Allow VPC CIDR ingress on port 2049 to prevent EB boot timeouts
-    VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids $DEFAULT_VPC_ID --query "Vpcs[0].CidrBlock" --output text 2>>$LOG_FILE)
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $DEFAULT_SG_ID --protocol tcp --port 2049 --cidr $VPC_CIDR 2>>$LOG_FILE || true
+    VPC_CIDR=$(aws ec2 describe-vpcs \
+        --vpc-ids $DEFAULT_VPC_ID \
+        --query "Vpcs[0].CidrBlock" \
+        --output text 2>>$LOG_FILE)
+    aws ec2 authorize-security-group-ingress \
+        --region $REGION \
+        --group-id $DEFAULT_SG_ID \
+        --protocol tcp \
+        --port 2049 \
+        --cidr $VPC_CIDR 2>>$LOG_FILE || true
 
     # Create Mount Targets in all Default Subnets
-    SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" --region $REGION --query "Subnets[*].SubnetId" --output text 2>>$LOG_FILE)
+    SUBNETS=$(aws ec2 describe-subnets \
+        --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" \
+        --region $REGION \
+        --query "Subnets[*].SubnetId" \
+        --output text 2>>$LOG_FILE)
     for subnet in $SUBNETS; do
-        aws efs create-mount-target --file-system-id $EFS_ID --subnet-id $subnet --security-groups $DEFAULT_SG_ID 2>>$LOG_FILE || echo "   -> Mount target already exists for $subnet" | tee -a $LOG_FILE
+        aws efs create-mount-target \
+            --file-system-id $EFS_ID \
+            --subnet-id $subnet \
+            --security-groups $DEFAULT_SG_ID 2>>$LOG_FILE || echo "   -> Mount target already exists for $subnet" | tee -a $LOG_FILE
     done
     export EFS_ID
 }
@@ -224,12 +279,44 @@ provision_aurora() {
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Instance exists." | tee -a $LOG_FILE
 }
 
-provision_eb() {
-    echo "6. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70%)..." | tee -a $LOG_FILE
-    aws elasticbeanstalk create-application --application-name $APP_NAME --region $REGION >> $LOG_FILE 2>&1 || true
+provision_acm_and_https() {
+    echo "5.5 Requesting ACM SSL Certificate & Configuring HTTPS Listener..." | tee -a $LOG_FILE
 
-    # Generate EB Autoscaling Options
-    cat << 'EOF' > eb-options.json
+    # Search for an existing certificate matching DOMAIN_NAME
+    CERT_ARN=$(aws acm list-certificates \
+        --region $REGION \
+        --query "CertificateSummaryList[?DomainName=='$DOMAIN_NAME'].CertificateArn | [0]" \
+        --output text 2>>$LOG_FILE || true)
+
+    if [ "$CERT_ARN" == "None" ] || [ -z "$CERT_ARN" ]; then
+        echo "   -> Requesting new public ACM certificate for $DOMAIN_NAME..." | tee -a $LOG_FILE
+        CERT_ARN=$(aws acm request-certificate \
+            --domain-name $DOMAIN_NAME \
+            --validation-method DNS \
+            --region $REGION \
+            --query "CertificateArn" --output text 2>>$LOG_FILE)
+        echo "   -> Requested ACM Certificate ARN: $CERT_ARN" | tee -a $LOG_FILE
+        echo "   -> NOTE: Complete the DNS CNAME validation record in Cloudflare or your DNS manager for issuance." | tee -a $LOG_FILE
+    else
+        echo "   -> Existing ACM Certificate found: $CERT_ARN" | tee -a $LOG_FILE
+    fi
+
+    export CERT_ARN
+}
+
+provision_eb() {
+    echo "6. Provisioning Elastic Beanstalk (CPU Autoscaling: 30%-70% & HTTPS Listener)..." | tee -a $LOG_FILE
+    aws elasticbeanstalk create-application \
+        --application-name $APP_NAME \
+        --region $REGION >> $LOG_FILE 2>&1 || true
+
+    # Ensure CERT_ARN is populated
+    if [ -z "$CERT_ARN" ]; then
+        provision_acm_and_https
+    fi
+
+    # Generate EB Autoscaling Options & Load Balancer Listener Rules (HTTP 80 & HTTPS 443 with SSL Certificate Binding)
+    cat << EOF > eb-options.json
 [
   {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
   {"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
@@ -238,16 +325,32 @@ provision_eb() {
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
   {"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"}
+  {"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"},
+  {"Namespace": "aws:elbv2:listener:default", "OptionName": "ListenerEnabled", "Value": "true"},
+  {"Namespace": "aws:elbv2:listener:443", "OptionName": "ListenerEnabled", "Value": "true"},
+  {"Namespace": "aws:elbv2:listener:443", "OptionName": "Protocol", "Value": "HTTPS"},
+  {"Namespace": "aws:elbv2:listener:443", "OptionName": "SSLCertificateArns", "Value": "$CERT_ARN"}
 ]
 EOF
 
-    STACK_NAME=$(aws elasticbeanstalk list-available-solution-stacks --region $REGION --query "SolutionStacks[?contains(@, 'running PHP 8.3')] | [0]" --output text 2>>$LOG_FILE)
-    aws elasticbeanstalk create-environment --application-name $APP_NAME --environment-name $ENV_NAME --solution-stack-name "$STACK_NAME" --option-settings file://eb-options.json --region $REGION >> $LOG_FILE 2>&1 || echo "   -> EB Environment already exists." | tee -a $LOG_FILE
+    STACK_NAME=$(aws elasticbeanstalk list-available-solution-stacks \
+        --region $REGION \
+        --query "SolutionStacks[?contains(@, 'running PHP 8.3')] | [0]" \
+        --output text 2>>$LOG_FILE)
+    aws elasticbeanstalk create-environment \
+        --application-name $APP_NAME \
+        --environment-name $ENV_NAME \
+        --solution-stack-name "$STACK_NAME" \
+        --option-settings file://eb-options.json \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> EB Environment already exists." | tee -a $LOG_FILE
 
     echo "   -> Waiting for EB Security Group to generate..." | tee -a $LOG_FILE
     while true; do
-        EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE || true)
+        EB_SG_ID=$(aws ec2 describe-security-groups \
+            --region $REGION \
+            --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text 2>>$LOG_FILE || true)
         if [ "$EB_SG_ID" != "None" ] && [ -n "$EB_SG_ID" ]; then
             echo "   -> Found Elastic Beanstalk SG: $EB_SG_ID" | tee -a $LOG_FILE
             break
@@ -258,17 +361,65 @@ EOF
 
 apply_security() {
     echo "7. Applying Network Security Group Bindings..." | tee -a $LOG_FILE
-    EB_SG_ID=$(aws ec2 describe-security-groups --region $REGION --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
-    DEFAULT_VPC_ID=$(aws ec2 describe-security-groups --group-ids $EB_SG_ID --region $REGION --query "SecurityGroups[0].VpcId" --output text 2>>$LOG_FILE)
-    DEFAULT_SG_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" --region $REGION --query "SecurityGroups[0].GroupId" --output text 2>>$LOG_FILE)
+    EB_SG_ID=$(aws ec2 describe-security-groups \
+        --region $REGION \
+        --filters "Name=tag:elasticbeanstalk:environment-name,Values=$ENV_NAME" \
+        --query "SecurityGroups[0].GroupId" \
+        --output text 2>>$LOG_FILE)
+    DEFAULT_VPC_ID=$(aws ec2 describe-security-groups \
+        --group-ids $EB_SG_ID \
+        --region $REGION \
+        --query "SecurityGroups[0].VpcId" \
+        --output text 2>>$LOG_FILE)
+    DEFAULT_SG_ID=$(aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" \
+        --region $REGION \
+        --query "SecurityGroups[0].GroupId" \
+        --output text 2>>$LOG_FILE)
 
-    aws ec2 authorize-security-group-egress --group-id $EB_SG_ID --protocol -1 --cidr 0.0.0.0/0 --region $REGION 2>>$LOG_FILE || true
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $DEFAULT_SG_ID --protocol tcp --port 3306 --source-group $EB_SG_ID 2>>$LOG_FILE || true
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $DEFAULT_SG_ID --protocol tcp --port 6379 --source-group $EB_SG_ID 2>>$LOG_FILE || true
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $DEFAULT_SG_ID --protocol tcp --port 2049 --source-group $EB_SG_ID 2>>$LOG_FILE || true
+    # ADDED: Authorize HTTPS inbound traffic on the Elastic Beanstalk Security Group
+    aws ec2 authorize-security-group-ingress \
+        --group-id $EB_SG_ID \
+        --protocol tcp \
+        --port 443 \
+        --cidr 0.0.0.0/0 \
+        --region $REGION 2>>$LOG_FILE || true
 
-    aws rds modify-db-cluster --db-cluster-identifier $DB_CLUSTER_ID --vpc-security-group-ids $EB_SG_ID $DEFAULT_SG_ID --apply-immediately --region $REGION >> $LOG_FILE 2>&1
-    aws elasticache modify-replication-group --replication-group-id $REDIS_ID --security-group-ids $EB_SG_ID $DEFAULT_SG_ID --apply-immediately --region $REGION >> $LOG_FILE 2>&1
+    aws ec2 authorize-security-group-egress \
+        --group-id $EB_SG_ID \
+        --protocol \
+        -1 \
+        --cidr 0.0.0.0/0 \
+        --region $REGION 2>>$LOG_FILE || true
+    aws ec2 authorize-security-group-ingress \
+        --region $REGION \
+        --group-id $DEFAULT_SG_ID \
+        --protocol tcp \
+        --port 3306 \
+        --source-group $EB_SG_ID 2>>$LOG_FILE || true
+    aws ec2 authorize-security-group-ingress \
+        --region $REGION \
+        --group-id $DEFAULT_SG_ID \
+        --protocol tcp \
+        --port 6379 \
+        --source-group $EB_SG_ID 2>>$LOG_FILE || true
+    aws ec2 authorize-security-group-ingress \
+        --region $REGION \
+        --group-id $DEFAULT_SG_ID \
+        --protocol tcp \
+        --port 2049 \
+        --source-group $EB_SG_ID 2>>$LOG_FILE || true
+
+    aws rds modify-db-cluster \
+        --db-cluster-identifier $DB_CLUSTER_ID \
+        --vpc-security-group-ids $EB_SG_ID $DEFAULT_SG_ID \
+        --apply-immediately \
+        --region $REGION >> $LOG_FILE 2>&1
+    aws elasticache modify-replication-group \
+        --replication-group-id $REDIS_ID \
+        --security-group-ids $EB_SG_ID $DEFAULT_SG_ID \
+        --apply-immediately \
+        --region $REGION >> $LOG_FILE 2>&1
 }
 
 generate_codebase() {
@@ -276,8 +427,16 @@ generate_codebase() {
 
     # Fetch dynamic endpoints from AWS
     echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
-    export DB_HOST=$(aws rds describe-db-clusters --db-cluster-identifier $DB_CLUSTER_ID --region $REGION --query "DBClusters[0].Endpoint" --output text)
-    export REDIS_HOST=$(aws elasticache describe-replication-groups --replication-group-id $REDIS_ID --region $REGION --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" --output text)
+    export DB_HOST=$(aws rds describe-db-clusters \
+        --db-cluster-identifier $DB_CLUSTER_ID \
+        --region $REGION \
+        --query "DBClusters[0].Endpoint" \
+        --output text)
+    export REDIS_HOST=$(aws elasticache describe-replication-groups \
+        --replication-group-id $REDIS_ID \
+        --region $REGION \
+        --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
+        --output text)
 
     # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     mkdir -p .ebextensions
@@ -660,6 +819,7 @@ provision_s3
 provision_efs
 provision_redis
 provision_aurora
+provision_acm_and_https
 provision_eb
 apply_security
 generate_codebase
