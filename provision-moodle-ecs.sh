@@ -15,7 +15,8 @@ export DB_PASSWORD="Temp123()"
 export REDIS_ID="maru-moodle-redis"
 export ECS_CLUSTER="maru-moodle-cluster"
 export ECR_REPO="maru-moodle-app"
-export WWWROOT="http://changeme.com"
+export WWWROOT="https://changeme-me-to-your-domain.com" # ADDED: Placeholder for Moodle's wwwroot, to be updated post-deployment
+export DOMAIN_NAME="changeme-me-to-your-domain.com" # ADDED: Target domain for ACM Certificate provisioning
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle (ECS Fargate)..." | tee -a $LOG_FILE
@@ -191,6 +192,28 @@ provision_aurora() {
         --engine aurora-mysql --db-instance-class db.serverless --region $REGION >> $LOG_FILE 2>&1 || true
 }
 
+provision_acm_and_https() {
+    echo "5.5 Requesting ACM SSL Certificate..." | tee -a $LOG_FILE
+
+    # Search for an existing certificate matching DOMAIN_NAME
+    CERT_ARN=$(aws acm list-certificates --region $REGION --query "CertificateSummaryList[?DomainName=='$DOMAIN_NAME'].CertificateArn | [0]" --output text 2>>$LOG_FILE || true)
+
+    if [ "$CERT_ARN" == "None" ] || [ -z "$CERT_ARN" ]; then
+        echo "   -> Requesting new public ACM certificate for $DOMAIN_NAME..." | tee -a $LOG_FILE
+        CERT_ARN=$(aws acm request-certificate \
+            --domain-name $DOMAIN_NAME \
+            --validation-method DNS \
+            --region $REGION \
+            --query "CertificateArn" --output text 2>>$LOG_FILE)
+        echo "   -> Requested ACM Certificate ARN: $CERT_ARN" | tee -a $LOG_FILE
+        echo "   -> NOTE: Complete the DNS CNAME validation record in Cloudflare or your DNS manager for issuance." | tee -a $LOG_FILE
+    else
+        echo "   -> Existing ACM Certificate found: $CERT_ARN" | tee -a $LOG_FILE
+    fi
+
+    export CERT_ARN
+}
+
 provision_networking() {
     echo "6. Provisioning ALB, Security Groups & Networking..." | tee -a $LOG_FILE
     DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text)
@@ -199,6 +222,9 @@ provision_networking() {
     # Create ALB Security Group
     ALB_SG_ID=$(aws ec2 create-security-group --group-name moodle-alb-sg --description "Moodle ALB SG" --vpc-id $DEFAULT_VPC_ID --query 'GroupId' --output text 2>>$LOG_FILE || aws ec2 describe-security-groups --filters "Name=group-name,Values=moodle-alb-sg" --query "SecurityGroups[0].GroupId" --output text)
     aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $REGION 2>>$LOG_FILE || true
+
+    # ADDED: Authorize HTTPS inbound traffic on the ALB Security Group
+    aws ec2 authorize-security-group-ingress --group-id $ALB_SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0 --region $REGION 2>>$LOG_FILE || true
 
     # Create ECS Task Security Group
     ECS_SG_ID=$(aws ec2 create-security-group --group-name moodle-ecs-sg --description "Moodle ECS Task SG" --vpc-id $DEFAULT_VPC_ID --query 'GroupId' --output text 2>>$LOG_FILE || aws ec2 describe-security-groups --filters "Name=group-name,Values=moodle-ecs-sg" --query "SecurityGroups[0].GroupId" --output text)
@@ -221,8 +247,19 @@ provision_networking() {
     # Create Target Group
     TG_ARN=$(aws elbv2 create-target-group --name moodle-tg --protocol HTTP --port 80 --vpc-id $DEFAULT_VPC_ID --target-type ip --health-check-path /sys-test.php --query 'TargetGroups[0].TargetGroupArn' --output text 2>>$LOG_FILE || aws elbv2 describe-target-groups --names moodle-tg --query 'TargetGroups[0].TargetGroupArn' --output text)
 
-    # Create Listener
+    # Create Listeners
     aws elbv2 create-listener --load-balancer-arn $ALB_ARN --protocol HTTP --port 80 --default-actions Type=forward,TargetGroupArn=$TG_ARN --region $REGION >> $LOG_FILE 2>&1 || true
+
+    # ADDED: Create HTTPS Listener and bind the ACM Certificate
+    if [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ]; then
+        aws elbv2 create-listener \
+            --load-balancer-arn $ALB_ARN \
+            --protocol HTTPS \
+            --port 443 \
+            --certificates CertificateArn=$CERT_ARN \
+            --default-actions Type=forward,TargetGroupArn=$TG_ARN \
+            --region $REGION >> $LOG_FILE 2>&1 || true
+    fi
 
     export ALB_SG_ID ECS_SG_ID TG_ARN SUBNETS
 }
@@ -628,6 +665,7 @@ provision_s3
 provision_efs
 provision_redis
 provision_aurora
+provision_acm_and_https
 provision_networking
 provision_ecs
 provision_cron
