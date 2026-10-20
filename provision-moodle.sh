@@ -115,6 +115,33 @@ EOF
         --user-name github-actions-moodle-deploy \
         --policy-name EBDeployPolicy \
         --policy-document file://eb-deploy-policy.json 2>>$LOG_FILE || true
+
+    # 1.5 Create Custom Service Role for Managed Updates
+    cat << 'EOF' > eb-service-trust-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "elasticbeanstalk.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+    aws iam create-role \
+        --role-name aws-elasticbeanstalk-custom-service-role \
+        --assume-role-policy-document file://eb-service-trust-policy.json 2>>$LOG_FILE || echo "    -> Custom Service Role already exists." | tee -a $LOG_FILE
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-custom-service-role \
+        --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService 2>>$LOG_FILE || true
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-custom-service-role \
+        --policy-arn arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth 2>>$LOG_FILE || true
+    aws iam attach-role-policy \
+        --role-name aws-elasticbeanstalk-custom-service-role \
+        --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy 2>>$LOG_FILE || true
 }
 
 provision_s3() {
@@ -315,7 +342,7 @@ provision_eb() {
         provision_acm_and_https
     fi
 
-    # Generate EB Autoscaling Options & Load Balancer Listener Rules (HTTP 80 & HTTPS 443 with SSL Certificate Binding)
+    # Generate EB Autoscaling Options & Load Balancer Listener Rules
     cat << EOF > eb-options.json
 [
   {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
@@ -329,7 +356,12 @@ provision_eb() {
   {"Namespace": "aws:elbv2:listener:default", "OptionName": "ListenerEnabled", "Value": "true"},
   {"Namespace": "aws:elbv2:listener:443", "OptionName": "ListenerEnabled", "Value": "true"},
   {"Namespace": "aws:elbv2:listener:443", "OptionName": "Protocol", "Value": "HTTPS"},
-  {"Namespace": "aws:elbv2:listener:443", "OptionName": "SSLCertificateArns", "Value": "$CERT_ARN"}
+  {"Namespace": "aws:elbv2:listener:443", "OptionName": "SSLCertificateArns", "Value": "$CERT_ARN"},
+  {"Namespace": "aws:elasticbeanstalk:environment", "OptionName": "ServiceRole", "Value": "aws-elasticbeanstalk-custom-service-role"},
+  {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "ManagedActionsEnabled", "Value": "true"},
+  {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "PreferredStartTime", "Value": "Sat:16:00"},
+  {"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "UpdateLevel", "Value": "minor"},
+  {"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "InstanceRefreshEnabled", "Value": "true"}
 ]
 EOF
 
