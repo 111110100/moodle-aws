@@ -119,14 +119,14 @@ EOF
     # 1.5 Create Custom Service Role for Managed Updates
     cat << 'EOF' > eb-service-trust-policy.json
 {
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": { "Service": "elasticbeanstalk.amazonaws.com" },
-      "Action": "sts:AssumeRole"
-    }
-  ]
+"Version": "2012-10-17",
+"Statement": [
+{
+  "Effect": "Allow",
+  "Principal": { "Service": "elasticbeanstalk.amazonaws.com" },
+  "Action": "sts:AssumeRole"
+}
+]
 }
 EOF
 
@@ -247,8 +247,7 @@ provision_efs() {
 }
 
 provision_redis() {
-    echo "4. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling)..." | tee -a $LOG_FILE
-    # Upgraded from cache-cluster to replication-group for Multi-AZ and Autoscaling support
+    echo "4. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling & Transit Encryption)..." | tee -a $LOG_FILE
     aws elasticache create-replication-group \
         --replication-group-id $REDIS_ID \
         --replication-group-description "Moodle Redis Cluster" \
@@ -256,6 +255,7 @@ provision_redis() {
         --cache-node-type cache.t4g.micro \
         --num-cache-clusters 2 \
         --automatic-failover-enabled \
+        --transit-encryption-enabled \
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Replication Group already exists." | tee -a $LOG_FILE
 
     # Register Redis for Autoscaling (Scale replicas based on CPU)
@@ -345,23 +345,31 @@ provision_eb() {
     # Generate EB Autoscaling Options & Load Balancer Listener Rules
     cat << EOF > eb-options.json
 [
-  {"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
-  {"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "2"},
-  {"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "6"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
-  {"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"},
-  {"Namespace": "aws:elbv2:listener:default", "OptionName": "ListenerEnabled", "Value": "true"},
-  {"Namespace": "aws:elbv2:listener:443", "OptionName": "ListenerEnabled", "Value": "true"},
-  {"Namespace": "aws:elbv2:listener:443", "OptionName": "Protocol", "Value": "HTTPS"},
-  {"Namespace": "aws:elbv2:listener:443", "OptionName": "SSLCertificateArns", "Value": "$CERT_ARN"},
-  {"Namespace": "aws:elasticbeanstalk:environment", "OptionName": "ServiceRole", "Value": "aws-elasticbeanstalk-custom-service-role"},
-  {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "ManagedActionsEnabled", "Value": "true"},
-  {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "PreferredStartTime", "Value": "Sat:16:00"},
-  {"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "UpdateLevel", "Value": "minor"},
-  {"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "InstanceRefreshEnabled", "Value": "true"}
+{"Namespace": "aws:elasticbeanstalk:environment", "OptionName": "LoadBalancerType", "Value": "application"},
+{"Namespace": "aws:elasticbeanstalk:environment", "OptionName": "ServiceRole", "Value": "aws-elasticbeanstalk-custom-service-role"},
+
+{"Namespace": "aws:autoscaling:launchconfiguration", "OptionName": "IamInstanceProfile", "Value": "aws-elasticbeanstalk-ec2-role"},
+{"Namespace": "aws:ec2:instances", "OptionName": "InstanceTypes", "Value": "t4g.medium, c7g.large"},
+
+{"Namespace": "aws:autoscaling:asg", "OptionName": "MinSize", "Value": "1"},
+{"Namespace": "aws:autoscaling:asg", "OptionName": "MaxSize", "Value": "10"},
+{"Namespace": "aws:autoscaling:trigger", "OptionName": "MeasureName", "Value": "CPUUtilization"},
+{"Namespace": "aws:autoscaling:trigger", "OptionName": "Unit", "Value": "Percent"},
+{"Namespace": "aws:autoscaling:trigger", "OptionName": "LowerThreshold", "Value": "30"},
+{"Namespace": "aws:autoscaling:trigger", "OptionName": "UpperThreshold", "Value": "70"},
+
+{"Namespace": "aws:elbv2:listener:default", "OptionName": "ListenerEnabled", "Value": "true"},
+{"Namespace": "aws:elbv2:listener:443", "OptionName": "ListenerEnabled", "Value": "true"},
+{"Namespace": "aws:elbv2:listener:443", "OptionName": "Protocol", "Value": "HTTPS"},
+{"Namespace": "aws:elbv2:listener:443", "OptionName": "SSLCertificateArns", "Value": "$CERT_ARN"},
+
+{"Namespace": "aws:elasticbeanstalk:environment:process:default", "OptionName": "Port", "Value": "443"},
+{"Namespace": "aws:elasticbeanstalk:environment:process:default", "OptionName": "Protocol", "Value": "HTTPS"},
+
+{"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "ManagedActionsEnabled", "Value": "true"},
+{"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "PreferredStartTime", "Value": "Sat:16:00"},
+{"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "UpdateLevel", "Value": "minor"},
+{"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "InstanceRefreshEnabled", "Value": "true"}
 ]
 EOF
 
@@ -538,6 +546,38 @@ EOF
         deny all;
         return 404;
     }
+EOF
+
+    # 7.3a Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
+    cat << 'EOF' > .ebextensions/08-ssl-backend.config
+packages:
+yum:
+openssl: []
+commands:
+01_generate_ssl:
+command: |
+  mkdir -p /etc/pki/tls/certs /etc/pki/tls/private
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout /etc/pki/tls/private/internal.key \
+    -out /etc/pki/tls/certs/internal.crt \
+    -subj "/C=AU/ST=Victoria/L=Melbourne/O=MaruAcademy/CN=internal"
+  chmod 600 /etc/pki/tls/private/internal.key
+EOF
+
+    # Nginx HTTPS Server Block
+    mkdir -p .platform/nginx/conf.d
+    cat << 'EOF' > .platform/nginx/conf.d/https.conf
+server {
+listen 443 ssl;
+server_name localhost;
+
+ssl_certificate /etc/pki/tls/certs/internal.crt;
+ssl_certificate_key /etc/pki/tls/private/internal.key;
+ssl_protocols TLSv1.2 TLSv1.3;
+
+# Inherit the EB Moodle routing rules
+include conf.d/elasticbeanstalk/*.conf;
+}
 EOF
 
     # ADDED: Adjust PHP CGI settings to make Moodle router work
@@ -755,13 +795,13 @@ EOF
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-echo "<h3>1. Testing Redis Connection</h3>";
-$redis_endpoint = "$REDIS_HOST";
+echo "<h3>1. Testing Redis Connection (TLS Encrypted)</h3>";
+$redis_endpoint = "tls://$REDIS_HOST";
 
 if (class_exists('Redis')) {
     $redis = new Redis();
     if (@$redis->connect($redis_endpoint, 6379, 5)) {
-        echo "<strong style='color:green;'>Connected to Redis!</strong><br>";
+        echo "<strong style='color:green;'>Connected securely to Redis!</strong><br>";
     } else {
         echo "<strong style='color:red;'>Failed to connect to Redis.</strong><br>";
     }
