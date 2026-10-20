@@ -59,20 +59,13 @@ EOF
         --instance-profile-name aws-elasticbeanstalk-ec2-role \
         --role-name aws-elasticbeanstalk-ec2-role 2>>$LOG_FILE || true
 
-    # 1.4 Create GitHub Actions Deployment User & Output Keys
+    # 1.4 Create GitHub Actions Deployment User with LEAST PRIVILEGE
     aws iam create-user \
         --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
-    aws iam attach-user-policy \
-        --user-name github-actions-moodle-deploy \
-        --policy-arn arn:aws:iam::aws:policy/AWSElasticBeanstalkAdministrator 2>>$LOG_FILE || true
 
     echo "   -> Generating Deployment Keys (Saved to github_deploy_keys.json)..." | tee -a $LOG_FILE
     aws iam create-access-key \
         --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
-
-    # 1.4 Create GitHub Actions Deployment User with LEAST PRIVILEGE
-    aws iam create-user \
-        --user-name github-actions-moodle-deploy 2>>$LOG_FILE || echo "   -> GitHub Deploy User already exists." | tee -a $LOG_FILE
 
     # Scoped inline policy restricting the user strictly to EB deployment commands
     cat << 'EOF' > eb-deploy-policy.json
@@ -111,6 +104,7 @@ EOF
   ]
 }
 EOF
+
     aws iam put-user-policy \
         --user-name github-actions-moodle-deploy \
         --policy-name EBDeployPolicy \
@@ -551,17 +545,17 @@ EOF
     # 7.3a Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
     cat << 'EOF' > .ebextensions/08-ssl-backend.config
 packages:
-yum:
-openssl: []
+  yum:
+    openssl: []
 commands:
-01_generate_ssl:
-command: |
-  mkdir -p /etc/pki/tls/certs /etc/pki/tls/private
-  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout /etc/pki/tls/private/internal.key \
-    -out /etc/pki/tls/certs/internal.crt \
-    -subj "/C=AU/ST=Victoria/L=Melbourne/O=MaruAcademy/CN=internal"
-  chmod 600 /etc/pki/tls/private/internal.key
+  01_generate_ssl:
+    command: |
+      mkdir -p /etc/pki/tls/certs /etc/pki/tls/private
+      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /etc/pki/tls/private/internal.key \
+        -out /etc/pki/tls/certs/internal.crt \
+        -subj "/C=AU/ST=Victoria/L=Melbourne/O=MaruAcademy/CN=internal"
+      chmod 600 /etc/pki/tls/private/internal.key
 EOF
 
     # Nginx HTTPS Server Block
@@ -827,56 +821,6 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
     echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>";
 }
 ?>
-EOF
-
-    # 7.X Override the default Elastic Beanstalk PHP handler to support Moodle routing
-    cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/php.conf
-# This file is managed by Elastic Beanstalk, overridden for Moodle 5.2 routing
-root /var/www/html/public;
-
-index index.php index.html index.htm;
-
-location ~ \.(php|phar)(/.*)?$ {
-    fastcgi_split_path_info ^(.+\.(?:php|phar))(/.*)$;
-
-    # Preserve path info before try_files clears it
-    set $path_info $fastcgi_path_info;
-    try_files $fastcgi_script_name $fastcgi_script_name/ /r.php$is_args$args;
-
-    fastcgi_intercept_errors on;
-    fastcgi_index  index.php;
-
-    fastcgi_param  QUERY_STRING       $query_string;
-    fastcgi_param  REQUEST_METHOD     $request_method;
-    fastcgi_param  CONTENT_TYPE       $content_type;
-    fastcgi_param  CONTENT_LENGTH     $content_length;
-
-    fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
-    fastcgi_param  REQUEST_URI        $request_uri;
-    fastcgi_param  DOCUMENT_URI       $document_uri;
-    fastcgi_param  DOCUMENT_ROOT      $document_root;
-    fastcgi_param  SERVER_PROTOCOL    $server_protocol;
-    fastcgi_param  REQUEST_SCHEME     $scheme;
-    fastcgi_param  HTTPS              $https if_not_empty;
-
-    fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
-    fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
-
-    fastcgi_param  REMOTE_ADDR        $remote_addr;
-    fastcgi_param  REMOTE_PORT        $remote_port;
-    fastcgi_param  SERVER_ADDR        $server_addr;
-    fastcgi_param  SERVER_PORT        $server_port;
-    fastcgi_param  SERVER_NAME        $server_name;
-
-    # PHP only, required if PHP was built with --enable-force-cgi-redirect
-    fastcgi_param  REDIRECT_STATUS    200;
-
-    fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
-
-    # Pass the preserved path_info variable to PHP-FPM
-    fastcgi_param  PATH_INFO $path_info;
-    fastcgi_pass   php-fpm;
-}
 EOF
 
     echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
