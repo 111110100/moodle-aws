@@ -214,7 +214,7 @@ provision_efs() {
         --enable-dns-hostnames '{"Value":true}' 2>>$LOG_FILE || true
 
     # ADDED: Allow VPC CIDR ingress on port 2049 to prevent EB boot timeouts
-    VPC_CIDR=$(aws ec2 describe-vpcs \
+    export VPC_CIDR=$(aws ec2 describe-vpcs \
         --vpc-ids $DEFAULT_VPC_ID \
         --query "Vpcs[0].CidrBlock" \
         --output text 2>>$LOG_FILE)
@@ -264,7 +264,6 @@ provision_redis() {
 provision_aurora() {
     echo "5. Provisioning Aurora Serverless v2 (MySQL 8.4)..." | tee -a $LOG_FILE
 
-    # 4.1 Create Custom DB Cluster Parameter Group to disable strict FK checks in MySQL 8.4
     aws rds create-db-cluster-parameter-group \
         --db-cluster-parameter-group-name $DB_PARAM_GROUP \
         --db-parameter-group-family aurora-mysql8.4 \
@@ -281,7 +280,6 @@ provision_aurora() {
         --parameters "ParameterName=require_secure_transport,ParameterValue=OFF,ApplyMethod=immediate" \
         --region $REGION >> $LOG_FILE 2>&1 || true
 
-    # 4.2 Provision Cluster and Instance
     aws rds create-db-cluster \
         --db-cluster-identifier $DB_CLUSTER_ID \
         --engine aurora-mysql \
@@ -290,6 +288,9 @@ provision_aurora() {
         --master-user-password $DB_PASSWORD \
         --db-cluster-parameter-group-name $DB_PARAM_GROUP \
         --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=16.0 \
+        --preferred-backup-window "14:00-14:30" \
+        --backup-retention-period 7 \
+        --preferred-maintenance-window "Sat:15:00-Sat:15:30" \
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Aurora Cluster exists." | tee -a $LOG_FILE
 
     aws rds create-db-instance \
@@ -331,9 +332,15 @@ provision_eb() {
         --application-name $APP_NAME \
         --region $REGION >> $LOG_FILE 2>&1 || true
 
-    # Ensure CERT_ARN is populated
-    if [ -z "$CERT_ARN" ]; then
-        provision_acm_and_https
+    # Ensure CERT_ARN is populated even if provision_acm_and_https was skipped
+    if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" == "None" ]; then
+        CERT_ARN=$(aws acm list-certificates \
+            --region $REGION \
+            --query "CertificateSummaryList[?DomainName=='$DOMAIN_NAME'].CertificateArn | [0]" \
+            --output text 2>>$LOG_FILE || true)
+        if [ "$CERT_ARN" == "None" ] || [ -z "$CERT_ARN" ]; then
+            provision_acm_and_https
+        fi
     fi
 
     # Generate EB Autoscaling Options & Load Balancer Listener Rules
@@ -456,8 +463,74 @@ apply_security() {
         --region $REGION >> $LOG_FILE 2>&1
 }
 
+
+provision_ses() {
+    echo "5.6 Provisioning AWS SES SMTP Credentials..." | tee -a $LOG_FILE
+
+    # 1. Verify Domain Identity (Requires manual confirmation via email link)
+    aws ses verify-email-identity \
+        --email-address "no-reply@${DOMAIN_NAME}" \
+        --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Identity already verified or pending." | tee -a $LOG_FILE
+    echo "   -> NOTE: Verification email sent to no-reply@${DOMAIN_NAME}. Check your inbox." | tee -a $LOG_FILE
+
+    # 2. Create IAM User and Policy
+    aws iam create-user --user-name moodle-ses-smtp-user 2>>$LOG_FILE || echo "   -> SES IAM User exists." | tee -a $LOG_FILE
+    aws iam attach-user-policy \
+        --user-name moodle-ses-smtp-user \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSesSendingAccess 2>>$LOG_FILE || true
+
+    # 3. Generate New Access Keys
+    echo "   -> Generating SES SMTP Keys..." | tee -a $LOG_FILE
+    CREDENTIALS=$(aws iam create-access-key --user-name moodle-ses-smtp-user --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text 2>>$LOG_FILE || true)
+
+    if [ -n "$CREDENTIALS" ]; then
+        ACCESS_KEY=$(echo "$CREDENTIALS" | awk '{print $1}')
+        SECRET_KEY=$(echo "$CREDENTIALS" | awk '{print $2}')
+
+        # 4. Derive SMTP Password natively via Python
+        SMTP_PASSWORD=$(python3 -c "
+import hmac, hashlib, base64
+def sign(key, msg): return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+signature = sign(('AWS4' + '$SECRET_KEY').encode('utf-8'), '11111111')
+signature = sign(signature, '$REGION')
+signature = sign(signature, 'ses')
+signature = sign(signature, 'aws4_request')
+signature = sign(signature, 'SendRawEmail')
+print(base64.b64encode(bytes([0x04]) + signature).decode('utf-8'))
+")
+
+        # 5. Output safe credentials file
+        cat << EOF > ses_smtp_credentials.txt
+SES SMTP Configuration for Moodle
+=================================
+SMTP hosts: email-smtp.${REGION}.amazonaws.com:465
+SMTP security: SSL
+SMTP Auth Type: LOGIN
+SMTP username: ${ACCESS_KEY}
+SMTP password: ${SMTP_PASSWORD}
+No-reply address: no-reply@${DOMAIN_NAME}
+EOF
+        echo "   -> SES Credentials successfully derived and saved to ses_smtp_credentials.txt" | tee -a $LOG_FILE
+    else
+        echo "   -> WARNING: Could not generate SES keys. User may have reached the 2-key IAM limit." | tee -a $LOG_FILE
+    fi
+}
+
 generate_codebase() {
     echo "8. Generating Repository Configuration Files..." | tee -a $LOG_FILE
+
+    # Dynamic Fallback: Resolve VPC_CIDR if provision_efs was skipped or unexported
+    if [ -z "$VPC_CIDR" ]; then
+        DEFAULT_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --query "Vpcs[0].VpcId" --output text 2>/dev/null || true)
+        export VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids $DEFAULT_VPC_ID --region $REGION --query "Vpcs[0].CidrBlock" --output text 2>/dev/null || echo "172.31.0.0/16")
+    else
+        export VPC_CIDR
+    fi
+
+    # Dynamic Fallback: Resolve EFS_ID if provision_efs was skipped
+    if [ -z "$EFS_ID" ]; then
+        export EFS_ID=$(aws efs describe-file-systems --region $REGION --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId | [0]" --output text 2>/dev/null || echo "fs-placeholder")
+    fi
 
     # Fetch dynamic endpoints from AWS
     echo "   -> Retrieving Aurora and Redis endpoints..." | tee -a $LOG_FILE
@@ -465,12 +538,12 @@ generate_codebase() {
         --db-cluster-identifier $DB_CLUSTER_ID \
         --region $REGION \
         --query "DBClusters[0].Endpoint" \
-        --output text)
+        --output text 2>/dev/null || echo "localhost")
     export REDIS_HOST=$(aws elasticache describe-replication-groups \
         --replication-group-id $REDIS_ID \
         --region $REGION \
         --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
-        --output text)
+        --output text 2>/dev/null || echo "127.0.0.1")
 
     # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     mkdir -p .ebextensions
@@ -836,6 +909,7 @@ provision_efs
 provision_redis
 provision_aurora
 provision_acm_and_https
+provision_ses
 provision_eb
 apply_security
 generate_codebase
