@@ -370,7 +370,13 @@ provision_eb() {
 {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "ManagedActionsEnabled", "Value": "true"},
 {"Namespace": "aws:elasticbeanstalk:managedactions", "OptionName": "PreferredStartTime", "Value": "Sat:16:00"},
 {"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "UpdateLevel", "Value": "minor"},
-{"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "InstanceRefreshEnabled", "Value": "true"}
+{"Namespace": "aws:elasticbeanstalk:managedactions:platformupdate", "OptionName": "InstanceRefreshEnabled", "Value": "true"},
+
+{"Namespace": "aws:elasticbeanstalk:command", "OptionName": "DeploymentPolicy", "Value": "Rolling" },
+{"Namespace": "aws:autoscaling:updatepolicy:rollingupdate", "OptionName": "RollingUpdateEnabled", "Value": "true" },
+{"Namespace": "aws:autoscaling:updatepolicy:rollingupdate", "OptionName": "RollingUpdateType", "Value": "Health" },
+{"Namespace": "aws:autoscaling:updatepolicy:rollingupdate", "OptionName": "MinInstancesInService", "Value": "1" },
+{"Namespace": "aws:autoscaling:updatepolicy:rollingupdate", "OptionName": "MaxBatchSize", "Value": "1" }
 ]
 EOF
 
