@@ -556,9 +556,9 @@ commands:
   01_mount_efs:
     command: |
       mkdir -p /mnt/moodledata
-      mount -t efs -o tls ${EFS_ID}:/ /mnt/moodledata
+      mount -t efs -o tls,_netdev ${EFS_ID}:/ /mnt/moodledata
       chown -R webapp:webapp /mnt/moodledata
-      chmod 777 /mnt/moodledata
+      chmod 2770 /mnt/moodledata
 EOF
 
     # 7.2 PHP ini settings
