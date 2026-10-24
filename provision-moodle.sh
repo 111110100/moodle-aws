@@ -724,25 +724,36 @@ EOF
     # 7.4 GitHub Actions
     mkdir -p .github/workflows
     envsubst '$APP_NAME $ENV_NAME' << 'EOF' > .github/workflows/deploy.yml
-name: Deploy Moodle to AWS Elastic Beanstalk
+name: Deploy Moodle to AWS
+
 on:
-  push:
-    branches: [ "main" ]
+  workflow_dispatch:
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Deploy to EB
-      uses: einaregilsson/beanstalk-deploy@v22
-      with:
-        aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        application_name: $APP_NAME
-        environment_name: $ENV_NAME
-        version_label: ${{ github.sha }}
-        region: ap-southeast-2
-        deployment_package: HEAD
+      - name: Checkout Code
+        uses: actions/checkout@v5   # Updated from @v4
+
+      - name: Zip Moodle Code
+        run: zip -r moodle-deployment.zip . -x "*.git*" ".github/*"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5   # Updated from @v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-2
+
+      - name: Deploy to Elastic Beanstalk
+        uses: aws-actions/aws-elasticbeanstalk-deploy@v1
+        with:
+          aws-region: ap-southeast-2
+          application_name: $APP_NAME
+          environment_name: $ENV_NAME
+          version-label: ${{ github.sha }}
+          deployment-package-path: moodle-deployment.zip
 EOF
 
     # 7.5 Moodle PHP Extension Dependencies
