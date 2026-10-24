@@ -7,6 +7,7 @@ export LOG_FILE="moodle_aws_setup.log"
 export REGION="ap-southeast-2"
 export APP_NAME="MaruMoodleLMS"
 export ENV_NAME="MaruMoodle-Prod"
+export BUCKET_NAME="maru-moodle-storage"
 export DB_CLUSTER_ID="maru-moodle-db"
 export DB_INSTANCE_ID="maru-moodle-db-instance"
 export DB_PARAM_GROUP="moodle-aurora-mysql84-params"
@@ -68,7 +69,7 @@ EOF
         --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
 
     # Scoped inline policy restricting the user strictly to EB deployment commands
-    cat << 'EOF' > eb-deploy-policy.json
+    envsubst '$REGION $APP_NAME' << 'EOF' > eb-deploy-policy.json
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -89,11 +90,11 @@ EOF
         "s3:GetBucketPolicy"
       ],
       "Resource": [
-        "arn:aws:elasticbeanstalk:ap-southeast-2:*:application/MaruMoodleLMS",
-        "arn:aws:elasticbeanstalk:ap-southeast-2:*:environment/MaruMoodleLMS/*",
-        "arn:aws:elasticbeanstalk:ap-southeast-2:*:applicationversion/MaruMoodleLMS/*",
-        "arn:aws:s3:::elasticbeanstalk-ap-southeast-2-*",
-        "arn:aws:s3:::elasticbeanstalk-ap-southeast-2-*/*"
+        "arn:aws:elasticbeanstalk:$REGION:*:application/$APP_NAME",
+        "arn:aws:elasticbeanstalk:$REGION:*:environment/$APP_NAME/*",
+        "arn:aws:elasticbeanstalk:$REGION:*:applicationversion/$APP_NAME/*",
+        "arn:aws:s3:::elasticbeanstalk-$REGION-*",
+        "arn:aws:s3:::elasticbeanstalk-$REGION-*/*"
       ]
     },
     {
@@ -143,7 +144,7 @@ provision_s3() {
 
     # Generate a globally unique bucket name
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-    S3_BUCKET_NAME="maru-moodle-storage-${ACCOUNT_ID}-${REGION}"
+    S3_BUCKET_NAME="${BUCKET_NAME}-${ACCOUNT_ID}-${REGION}"
 
     # Create the bucket
     aws s3api create-bucket \
@@ -734,7 +735,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v5   # Updated from @v4
+        uses: actions/checkout@v5
 
       - name: Zip Moodle Code
         run: zip -r moodle-deployment.zip . -x "*.git*" ".github/*"
@@ -749,7 +750,7 @@ jobs:
       - name: Deploy to Elastic Beanstalk
         uses: aws-actions/aws-elasticbeanstalk-deploy@v1
         with:
-          aws-region: ap-southeast-2
+          aws-region: $REGION
           application_name: $APP_NAME
           environment_name: $ENV_NAME
           version-label: ${{ github.sha }}
