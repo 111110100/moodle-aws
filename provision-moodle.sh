@@ -723,7 +723,7 @@ EOF
 
     # 7.4 GitHub Actions
     mkdir -p .github/workflows
-    envsubst '$APP_NAME $ENV_NAME' << 'EOF' > .github/workflows/deploy.yml
+    envsubst '$REGION $APP_NAME $ENV_NAME' << 'EOF' > .github/workflows/deploy.yml
 name: Deploy Moodle to AWS
 
 on:
@@ -744,7 +744,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-southeast-2
+          aws-region: $REGION
 
       - name: Deploy to Elastic Beanstalk
         uses: aws-actions/aws-elasticbeanstalk-deploy@v1
