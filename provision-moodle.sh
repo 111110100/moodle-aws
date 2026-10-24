@@ -25,7 +25,7 @@ setup_iam() {
     echo "1. Configuring IAM Roles & Instance Profiles..." | tee -a $LOG_FILE
 
     # 1.1 Create EC2 Trust Policy
-    cat << 'EOF' > ec2-trust-policy.json
+    cat << EOF > ec2-trust-policy.json
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -69,7 +69,7 @@ EOF
         --user-name github-actions-moodle-deploy > github_deploy_keys.json || echo "   -> Key limit reached for user." | tee -a $LOG_FILE
 
     # Scoped inline policy restricting the user strictly to EB deployment commands
-    envsubst '$REGION $APP_NAME' << 'EOF' > eb-deploy-policy.json
+    cat << EOF > eb-deploy-policy.json
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -112,16 +112,16 @@ EOF
         --policy-document file://eb-deploy-policy.json 2>>$LOG_FILE || true
 
     # 1.5 Create Custom Service Role for Managed Updates
-    cat << 'EOF' > eb-service-trust-policy.json
+    cat << EOF > eb-service-trust-policy.json
 {
-"Version": "2012-10-17",
-"Statement": [
-{
-  "Effect": "Allow",
-  "Principal": { "Service": "elasticbeanstalk.amazonaws.com" },
-  "Action": "sts:AssumeRole"
-}
-]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": { "Service": "elasticbeanstalk.amazonaws.com" },
+          "Action": "sts:AssumeRole"
+        }
+    ]
 }
 EOF
 
@@ -569,7 +569,7 @@ commands:
 EOF
 
     # 7.2 PHP ini settings
-    cat << 'EOF' > .ebextensions/02-php-settings.config
+    cat << EOF > .ebextensions/02-php-settings.config
 files:
   "/etc/php.d/99-moodle.ini":
     mode: "000644"
@@ -623,7 +623,7 @@ EOF
 EOF
 
     # 7.3a Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
-    cat << 'EOF' > .ebextensions/08-ssl-backend.config
+    cat << EOF > .ebextensions/08-ssl-backend.config
 packages:
   yum:
     openssl: []
@@ -640,7 +640,7 @@ EOF
 
     # Nginx HTTPS Server Block
     mkdir -p .platform/nginx/conf.d
-    cat << 'EOF' > .platform/nginx/conf.d/https.conf
+    cat << EOF > .platform/nginx/conf.d/https.conf
 server {
 listen 443 ssl;
 server_name localhost;
@@ -655,7 +655,7 @@ include conf.d/elasticbeanstalk/*.conf;
 EOF
 
     # ADDED: Adjust PHP CGI settings to make Moodle router work
-    cat << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/php.conf
+    envsubst << 'EOF' > .platform/nginx/conf.d/elasticbeanstalk/php.conf
     # This file is managed by Elastic Beanstalk, overridden for Moodle 5.2 routing
     root /var/www/html/public;
 
@@ -706,7 +706,7 @@ EOF
 
     # ADDED: Nginx Upload & Buffer Limits
     mkdir -p .platform/nginx/conf.d
-    cat << 'EOF' > .platform/nginx/conf.d/99-moodle-limits.conf
+    cat << EOF > .platform/nginx/conf.d/99-moodle-limits.conf
     # MIME Type Hash Optimizations
     types_hash_max_size 4096;
     types_hash_bucket_size 128;
@@ -758,7 +758,7 @@ jobs:
 EOF
 
     # 7.5 Moodle PHP Extension Dependencies
-    cat << 'EOF' > .ebextensions/03-php-modules.config
+    cat << EOF > .ebextensions/03-php-modules.config
 packages:
   yum:
     php8.3-gd: []
@@ -773,7 +773,7 @@ packages:
 EOF
 
     # 7.6 PHP-FPM Worker Tuning
-    cat << 'EOF' > .ebextensions/04-php-fpm.config
+    cat << EOF > .ebextensions/04-php-fpm.config
 files:
   "/etc/php-fpm.d/z-moodle.conf":
     mode: "000644"
@@ -790,7 +790,7 @@ files:
 EOF
 
     # 7.7 EFS-Locked Cron Job
-    cat << 'EOF' > .ebextensions/05-cron.config
+    envsubst << 'EOF' > .ebextensions/05-cron.config
 files:
   "/usr/local/bin/moodle-cron.sh":
     mode: "000755"
@@ -817,14 +817,14 @@ files:
 EOF
 
     # 7.8 Environment Config
-    cat << 'EOF' > .ebextensions/00-environment.config
+    cat << EOF > .ebextensions/00-environment.config
 option_settings:
   aws:elasticbeanstalk:command:
     Timeout: 1800
 EOF
 
     # 7.9 Document root
-    cat << 'EOF' > .ebextensions/06-document-root.config
+    cat << EOF > .ebextensions/06-document-root.config
 option_settings:
   aws:elasticbeanstalk:container:php:phpini:
     document_root: /public
