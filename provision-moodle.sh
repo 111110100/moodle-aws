@@ -16,6 +16,12 @@ export DB_PASSWORD="Temp123()"
 export REDIS_ID="maru-moodle-redis"
 export WWWROOT="http://changeme.com"
 export DOMAIN_NAME="changeme.com" # ADDED: Target domain for ACM Certificate provisioning
+export SSL_COUNTRY="AU"
+export SSL_STATE="New South Whales"
+export SSL_LOCALITY="Sydney"
+export SSL_ORG="CompanyName"
+export SSL_UNIT="TECH"
+
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle..." | tee -a $LOG_FILE
@@ -623,7 +629,7 @@ EOF
 EOF
 
     # 7.3a Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
-    cat << EOF > .ebextensions/08-ssl-backend.config
+    envsubst '$SSL_COUNTRY $SSL_STATE $SSL_LOCALITY $SSL_ORG $SSL_UNIT' << 'EOF' > .ebextensions/08-ssl-backend.config
 packages:
   yum:
     openssl: []
@@ -634,7 +640,7 @@ commands:
       openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout /etc/pki/tls/private/internal.key \
         -out /etc/pki/tls/certs/internal.crt \
-        -subj "/C=AU/ST=Victoria/L=Melbourne/O=MaruAcademy/CN=internal"
+        -subj "/C=$SSL_COUNTRY/ST=$SSL_STATE/L=$SSL_LOCALITY/O=$SSL_ORG/OU=$SSL_UNIT/CN=internal"
       chmod 600 /etc/pki/tls/private/internal.key
 EOF
 
@@ -854,11 +860,10 @@ $CFG->dboptions = array (
 $CFG->wwwroot   = '$WWWROOT';
 $CFG->dataroot  = '/mnt/moodledata';
 $CFG->admin     = 'admin';
-$CFG->directorypermissions = 0777;
+$CFG->directorypermissions = 02775;
 
 # Required for Auto-scaling setups
 $CFG->localcachedir = '/tmp/moodle-localcache';
-$CFG->dbsessions    = 1;
 
 # Required for HTTPS and AWS LB setups
 $CFG->sslproxy      = true;
