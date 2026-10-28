@@ -21,7 +21,7 @@ export SSL_STATE="New South Whales"
 export SSL_LOCALITY="Sydney"
 export SSL_ORG="CompanyName"
 export SSL_UNIT="TECH"
-
+export AWS_PAGER=""
 
 > $LOG_FILE
 echo "Starting Advanced AWS Infrastructure Provisioning for Moodle..." | tee -a $LOG_FILE
