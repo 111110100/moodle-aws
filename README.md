@@ -82,7 +82,7 @@ AWS CLI is required if you don't want to use CloudShell.
 3. Modify the static variables at the top of `provision-moodle.sh` (ensure you set `$WWWROOT` to your actual domain).
 4. Make the scripts executable:
 ```bash
-chmod +x provision-moodle.sh teardown-moodle.sh verify-aws-billing.sh cloudflare-aws-lb.sh
+chmod +x provision-moodle.sh teardown-moodle.sh verify-aws-billing.sh cloudflare-aws-lb.sh moodle_ids.sh
 ```
 5. Run the provisioning script:
 ```bash
@@ -116,7 +116,7 @@ git push origin main
 ```
 4. Navigate to `https://<YOUR_DOMAIN>/sys-test.php` to verify database, cache, and storage connectivity before initiating the Moodle web installer.
 
-### Phase 4: Testing ALB & Autoscaling
+### Phase 4: Testing ALB, Autoscaling & Hardening
 
 To verify that Elastic Beanstalk scales instances up when CPU utilization exceeds 70%, you can use a Python script to flood the Application Load Balancer with concurrent HTTP requests.
 
@@ -158,6 +158,11 @@ sudo -u webapp php /var/app/current/admin/cli/cron.php
 * **Bulk Delete Orphaned Plugins:**
 ```bash
 sudo -u webapp php /var/app/current/admin/cli/uninstall_plugins.php --purge-missing --run
+```
+
+4. Because Moodle hosts authentication endpoints, user databases, and file uploads, an IDS is essential—and often mandatory for ST4S compliance—to detect automated exploits, SQL injection, brute-force attempts, and unauthorized API calls across your AWS account. On AWS CloudShell, run the script:
+```
+./moodle_ids.sh
 ```
 
 ### Phase 6: Teardown (Stopping Charges)
