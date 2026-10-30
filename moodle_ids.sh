@@ -12,7 +12,7 @@ export AWS_PAGER=""
 trap 'rm -f waf-rules.json' EXIT
 
 echo "=================================================================="
-echo "          PROVISIONING INTRUSION DETECTION & WAF SECURITY          "
+echo "          PROVISIONING INTRUSION DETECTION & WAF SECURITY         "
 echo "=================================================================="
 
 # ------------------------------------------------------------------------------
