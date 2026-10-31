@@ -1,7 +1,6 @@
 #!/bin/bash
 # Exit immediately if a command fails
-set -e
-set -o pipefail
+set -eou pipefail
 
 export LOG_FILE="setup_fargate_backup.log"
 export REGION="ap-southeast-2"

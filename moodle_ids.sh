@@ -1,7 +1,6 @@
 #!/bin/bash
 # Exit immediately on failure, pipe failures
-set -e
-set -o pipefail
+set -eou pipefail
 
 ENV_NAME="MaruMoodle-Prod-v2"
 REGION="ap-southeast-2"

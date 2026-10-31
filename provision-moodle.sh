@@ -1,7 +1,6 @@
 #!/bin/bash
 # Exit immediately if a command fails, but allow specific expected duplicates (like IAM roles/rules) to bypass.
-set -e
-set -o pipefail
+set -eou pipefail
 
 export LOG_FILE="moodle_aws_setup.log"
 export REGION="ap-southeast-2"

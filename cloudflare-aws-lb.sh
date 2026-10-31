@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eou pipefail
 
 # Disable AWS CLI interactive terminal pager
 export AWS_PAGER=""

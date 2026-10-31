@@ -1,7 +1,6 @@
 #!/bin/bash
 # Exit immediately if any command returns a non-zero status
-set -e 
-set -o pipefail
+set -eou pipefail
 
 LOG_FILE="moodle_aws_teardown.log"
 REGION="ap-southeast-2"
@@ -33,7 +32,7 @@ teardown_aurora_instance() {
         --db-instance-identifier $DB_INSTANCE_ID \
         --skip-final-snapshot \
         --region $REGION >> $LOG_FILE 2>&1
-    
+
     echo "   -> Waiting for AWS to finish deleting the DB Instance..." | tee -a $LOG_FILE
     aws rds wait db-instance-deleted \
         --db-instance-identifier $DB_INSTANCE_ID \
@@ -62,7 +61,7 @@ teardown_efs() {
     echo "5. Deleting Elastic File System (EFS)..." | tee -a $LOG_FILE
     # Fetch EFS ID dynamically based on the creation token from the provision script
     EFS_ID=$(aws efs describe-file-systems --region $REGION --query "FileSystems[?CreationToken=='MoodleEFS'].FileSystemId" --output text)
-    
+
     if [ "$EFS_ID" == "" ] || [ "$EFS_ID" == "None" ]; then
         echo "   -> EFS not found or already deleted. Skipping." | tee -a $LOG_FILE
         return
@@ -70,15 +69,15 @@ teardown_efs() {
 
     echo "   -> Found EFS ID: $EFS_ID. Checking for mount targets..." | tee -a $LOG_FILE
     TARGETS=$(aws efs describe-mount-targets --file-system-id $EFS_ID --region $REGION --query "MountTargets[*].MountTargetId" --output text)
-    
+
     for target in $TARGETS; do
         echo "   -> Deleting mount target: $target" | tee -a $LOG_FILE
         aws efs delete-mount-target --mount-target-id $target --region $REGION >> $LOG_FILE 2>&1
     done
-    
+
     echo "   -> Waiting for network interfaces to release..." | tee -a $LOG_FILE
-    sleep 15 
-    
+    sleep 15
+
     aws efs delete-file-system --file-system-id $EFS_ID --region $REGION >> $LOG_FILE 2>&1
     echo "   -> EFS deleted." | tee -a $LOG_FILE
 }

@@ -1,4 +1,6 @@
 #!/bin/bash
+set -eou pipefail
+
 REGION="ap-southeast-2"
 LOG_FILE="billing_verification.log"
 
@@ -18,7 +20,7 @@ check_service() {
 
     # Print the service name padded to 35 characters
     printf "%-35s" "Checking $SERVICE_NAME..." | tee -a $LOG_FILE
-    
+
     if [ -z "$CMD_OUTPUT" ] || [ "$CMD_OUTPUT" == "None" ]; then
         echo "[ CLEAR ]" | tee -a $LOG_FILE
     else
