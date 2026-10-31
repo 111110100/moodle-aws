@@ -797,28 +797,12 @@ EOF
     # 7.7 EFS-Locked Cron Job
     envsubst << 'EOF' > .ebextensions/05-cron.config
 files:
-  "/usr/local/bin/moodle-cron.sh":
-    mode: "000755"
-    owner: root
-    group: root
-    content: |
-      #!/bin/bash
-      LOCK_DIR="/mnt/moodledata/cron-lock"
-      if mkdir "$LOCK_DIR" 2>/dev/null; then
-          sudo -u webapp /usr/bin/php /var/app/current/public/admin/cli/cron.php > /dev/null 2>&1
-          rmdir "$LOCK_DIR"
-      else
-          if [ -n "$(find "$LOCK_DIR" -prune -mmin +15 2>/dev/null)" ]; then
-              rmdir "$LOCK_DIR" 2>/dev/null
-          fi
-      fi
-
   "/etc/cron.d/moodle":
     mode: "000644"
     owner: root
     group: root
     content: |
-      * * * * * root /usr/local/bin/moodle-cron.sh
+      * * * * * root sudo -u webapp /usr/bin/php /var/app/current/admin/cli/cron.php > /dev/null 2>&1
 EOF
 
     # 7.8 Environment Config
@@ -826,6 +810,8 @@ EOF
 option_settings:
   aws:elasticbeanstalk:command:
     Timeout: 1800
+  aws:elasticbeanstalk:environment:proxy:
+    ProxyServer: nginx
 EOF
 
     # 7.9 Document root
@@ -916,6 +902,18 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
     echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>";
 }
 ?>
+EOF
+
+    # 7.12 enabled nginx and php-fpm
+    cat << EOF > .ebextensions/09-services.config
+services:
+  systemd:
+    php-fpm:
+      enabled: "true"
+      ensureRunning: "true"
+    nginx:
+      enabled: "true"
+      ensureRunning: "true"
 EOF
 
     echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
