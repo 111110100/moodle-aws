@@ -247,24 +247,51 @@ provision_efs() {
 }
 
 provision_redis() {
-    echo "4. Provisioning ElastiCache (Cluster Mode Enabled & Autoscaling & Transit Encryption)..." | tee -a $LOG_FILE
+    echo "4. Provisioning ElastiCache Redis HA Replication Group (Multi-AZ, Transit & At-Rest Encryption)..." | tee -a $LOG_FILE
+
+    # Get Default VPC Subnets to ensure Subnet Group exists
+    DEFAULT_VPC_ID=$(aws ec2 describe-vpcs \
+        --filters "Name=isDefault,Values=true" \
+        --region $REGION \
+        --query "Vpcs[0].VpcId" \
+        --output text 2>>$LOG_FILE || true)
+
+    if [ -n "$DEFAULT_VPC_ID" ] && [ "$DEFAULT_VPC_ID" != "None" ]; then
+        SUBNET_IDS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" \
+            --region $REGION \
+            --query "Subnets[*].SubnetId" \
+            --output text 2>>$LOG_FILE || true)
+
+        if [ -n "$SUBNET_IDS" ]; then
+            aws elasticache create-cache-subnet-group \
+                --cache-subnet-group-name "moodle-redis-subnet-group" \
+                --cache-subnet-group-description "Subnet group for Moodle Redis" \
+                --subnet-ids $SUBNET_IDS \
+                --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Subnet Group already exists." | tee -a $LOG_FILE
+        fi
+    fi
+
+    # Create HA Multi-Node Replication Group (1 Primary + 1 Read Replica across Multi-AZ)
     aws elasticache create-replication-group \
         --replication-group-id $REDIS_ID \
-        --replication-group-description "Moodle Redis Cluster" \
+        --replication-group-description "Moodle Multi-Node HA Redis Replication Group" \
         --engine redis \
         --cache-node-type cache.t4g.micro \
         --num-cache-clusters 2 \
         --automatic-failover-enabled \
         --transit-encryption-enabled \
+        --at-rest-encryption-enabled \
+        --cache-subnet-group-name "moodle-redis-subnet-group" \
         --region $REGION >> $LOG_FILE 2>&1 || echo "   -> Redis Replication Group already exists." | tee -a $LOG_FILE
 
-    # Register Redis for Autoscaling (Scale replicas based on CPU)
+    # Register Redis Read Replicas for Auto Scaling (Cluster Mode Disabled uses elasticache:replication-group:Replicas)
     aws application-autoscaling register-scalable-target \
         --service-namespace elasticache \
         --resource-id replication-group/$REDIS_ID \
-        --scalable-dimension elasticache:replication-group:NodeGroups \
+        --scalable-dimension elasticache:replication-group:Replicas \
         --min-capacity 1 --max-capacity 3 >> $LOG_FILE 2>&1 || true
-    echo "   -> Redis cluster and application autoscaling initiated." | tee -a $LOG_FILE
+    echo "   -> Redis HA replication group and read-replica autoscaling initiated." | tee -a $LOG_FILE
 }
 
 provision_aurora() {
@@ -556,7 +583,10 @@ generate_codebase() {
         --replication-group-id $REDIS_ID \
         --region $REGION \
         --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
-        --output text 2>/dev/null || echo "127.0.0.1")
+        --output text 2>/dev/null)
+    if [ -z "$REDIS_HOST" ] || [ "$REDIS_HOST" == "None" ]; then
+        export REDIS_HOST="127.0.0.1"
+    fi
 
     # 7 - .EBEXTENSIONS START HERE
     # 7.1 Environment Config
