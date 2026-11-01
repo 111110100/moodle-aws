@@ -917,8 +917,8 @@ EOF
 
     # 8 Prep hooks
     # 8.1 Recent Amazon Linux 2023 security updates fails when php-fpm starts. This fixes it.
-    mkdir -p .platforms/hooks/predeploy
-    envsubst << 'EOF' > .platforms/hooks/predeploy/01_create_php_fpm_log_dir.sh
+    mkdir -p .platform/hooks/predeploy
+    envsubst << 'EOF' > .platform/hooks/predeploy/01_create_php_fpm_log_dir.sh
 #!/usr/bin/env bash
 # Ensure the PHP-FPM log directory exists with correct permissions before services start
 set -eou pipefail
@@ -936,7 +936,7 @@ fi
 EOF
 
     # 8.2 Change ownsership of PHP files to prevent tampering
-    envsubst << 'EOF' > .platforms/hooks/predeploy/02_immutable_permission.sh
+    envsubst << 'EOF' > .platform/hooks/predeploy/02_immutable_permission.sh
 #!/usr/bin/env bash
 # Instead of installing a File Integrity Monitoring (FIM) agent to watch for modified PHP files, enforce immutable permissions
 set -eou pipefail
