@@ -716,7 +716,6 @@ EOF
 EOF
 
     # Nginx HTTPS Server Block
-    mkdir -p .platform/nginx/conf.d
     cat << EOF > .platform/nginx/conf.d/https.conf
 server {
 listen 443 ssl;
@@ -782,7 +781,6 @@ EOF
 EOF
 
     # ADDED: Nginx Upload & Buffer Limits
-    mkdir -p .platform/nginx/conf.d
     cat << EOF > .platform/nginx/conf.d/99-moodle-limits.conf
     # MIME Type Hash Optimizations
     types_hash_max_size 4096;
@@ -915,6 +913,50 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
     echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>";
 }
 ?>
+EOF
+
+    # 8 Prep hooks
+    # 8.1 Recent Amazon Linux 2023 security updates fails when php-fpm starts. This fixes it.
+    mkdir -p .platforms/hooks/predeploy
+    envsubst << 'EOF' > .platforms/hooks/predeploy/01_create_php_fpm_log_dir.sh
+#!/usr/bin/env bash
+# Ensure the PHP-FPM log directory exists with correct permissions before services start
+set -eou pipefail
+
+LOG_DIR="/var/log/php-fpm"
+
+if [ ! -d "$LOG_DIR" ]; then
+    mkdir -p "$LOG_DIR"
+    # PHP-FPM typically runs under the webapp/nginx/apache user;
+    # setting permissions to allow proper logging:
+    chown -R root:root "$LOG_DIR"
+    chmod 755 "$LOG_DIR"
+    echo "Created missing $LOG_DIR directory successfully."
+fi
+EOF
+
+    # 8.2 Change ownsership of PHP files to prevent tampering
+    envsubst << 'EOF' > .platforms/hooks/predeploy/02_immutable_permission.sh
+#!/usr/bin/env bash
+# Instead of installing a File Integrity Monitoring (FIM) agent to watch for modified PHP files, enforce immutable permissions
+set -eou pipefail
+
+# Target the staging directory before Beanstalk swaps it to /var/app/current
+APP_DIR="/var/app/staging"
+
+echo "Setting immutable application permissions on $APP_DIR..."
+
+# 1. Set root ownership across all Moodle core files
+chown -R root:root "$APP_DIR"
+
+# 2. Set strict directory (755) and file (644) permissions
+find "$APP_DIR" -type d -exec chmod 755 {} +
+find "$APP_DIR" -type f -exec chmod 644 {} +
+
+# 3. Explicitly ensure webapp/nginx CANNOT write to app root
+# (Moodle moodledata must already point to /mnt/efs/moodledata)
+
+echo "Permissions hardened successfully."
 EOF
 
     echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
