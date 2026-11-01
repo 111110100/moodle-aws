@@ -750,7 +750,7 @@ EOF
     }
 
     # 2. Block access to Moodle internal data/system directories
-    location ~ ^/(?:temp|cache|local/codechecker)/ {
+    location ~ ^/(?:temp|local/codechecker)/ {
         deny all;
         return 404;
     }
