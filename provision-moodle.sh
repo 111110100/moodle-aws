@@ -557,23 +557,34 @@ generate_codebase() {
         --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
         --output text 2>/dev/null || echo "127.0.0.1")
 
-    # 7.1 EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
+    # 7 - .EBEXTENSIONS START HERE
+    # 7.1 Environment Config
     mkdir -p .ebextensions
+    cat << EOF > .ebextensions/00-environment.config
+option_settings:
+  aws:elasticbeanstalk:command:
+    Timeout: 1800
+  aws:elasticbeanstalk:environment:proxy:
+    ProxyServer: nginx
+EOF
+
+    # 7.1a EFS Mount (Updated for Amazon Linux 2023 DNS resolution)
     cat << EOF > .ebextensions/01-efs-mount.config
 packages:
   yum:
     amazon-efs-utils: []
-    python3-botocore: []
+
 commands:
   01_mount_efs:
     command: |
       mkdir -p /mnt/moodledata
       mount -t efs -o tls,_netdev ${EFS_ID}:/ /mnt/moodledata
       chown -R webapp:webapp /mnt/moodledata
-      chmod 2770 /mnt/moodledata
+      chmod -R 777 /mnt/moodledata
+    test: "! mount | grep /mnt/moodledata"
 EOF
 
-    # 7.2 PHP ini settings
+    # 7.1b PHP ini settings
     cat << EOF > .ebextensions/02-php-settings.config
 files:
   "/etc/php.d/99-moodle.ini":
@@ -588,6 +599,83 @@ files:
       max_execution_time = 300
       memory_limit = 512M
       opcache.enable = 1
+EOF
+
+    # 7.1c Moodle PHP Extension Dependencies
+    cat << EOF > .ebextensions/03-php-modules.config
+packages:
+  yum:
+    php8.3-gd: []
+    php8.3-intl: []
+    php8.3-mbstring: []
+    php8.3-soap: []
+    php8.3-xml: []
+    php8.3-process: []
+    php8.3-opcache: []
+    php8.3-pecl-redis6: []
+    ghostscript: []
+EOF
+
+    # 7.1d PHP-FPM Worker Tuning
+    cat << EOF > .ebextensions/04-php-fpm.config
+files:
+  "/etc/php-fpm.d/z-moodle.conf":
+    mode: "000644"
+    owner: root
+    group: root
+    content: |
+      [www]
+      pm = dynamic
+      pm.max_children = 40
+      pm.start_servers = 10
+      pm.min_spare_servers = 10
+      pm.max_spare_servers = 20
+      pm.max_requests = 500
+EOF
+
+    # 7.1e EFS-Locked Cron Job
+    envsubst << 'EOF' > .ebextensions/05-cron.config
+files:
+  "/etc/cron.d/moodle":
+    mode: "000644"
+    owner: root
+    group: root
+    content: |
+      * * * * * root sudo -u webapp /usr/bin/php /var/app/current/admin/cli/cron.php > /dev/null 2>&1
+EOF
+    # 7.1f Document root
+    cat << EOF > .ebextensions/06-document-root.config
+option_settings:
+  aws:elasticbeanstalk:container:php:phpini:
+    document_root: /public
+EOF
+
+    # 7.1g Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
+    envsubst '$SSL_COUNTRY $SSL_STATE $SSL_LOCALITY $SSL_ORG $SSL_UNIT' << 'EOF' > .ebextensions/07-ssl-backend.config
+packages:
+  yum:
+    openssl: []
+commands:
+  01_generate_ssl:
+    command: |
+      mkdir -p /etc/pki/tls/certs /etc/pki/tls/private
+      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /etc/pki/tls/private/internal.key \
+        -out /etc/pki/tls/certs/internal.crt \
+        -subj "/C=$SSL_COUNTRY/ST=$SSL_STATE/L=$SSL_LOCALITY/O=$SSL_ORG/OU=$SSL_UNIT/CN=internal"
+      chmod 600 /etc/pki/tls/private/internal.key
+EOF
+
+    # 7.1h Enabled nginx and php-fpm
+    cat << EOF > .ebextensions/08-services.config
+services:
+  systemd:
+    php-fpm:
+      enabled: "true"
+      ensureRunning: "true"
+    nginx:
+      enabled: "true"
+      ensureRunning: "true"
 EOF
 
     # 7.3 Nginx Configuration for Moodle
@@ -625,22 +713,6 @@ EOF
         deny all;
         return 404;
     }
-EOF
-
-    # 7.3a Generate Self-Signed Certificates for Internal ALB-to-EC2 Encryption
-    envsubst '$SSL_COUNTRY $SSL_STATE $SSL_LOCALITY $SSL_ORG $SSL_UNIT' << 'EOF' > .ebextensions/08-ssl-backend.config
-packages:
-  yum:
-    openssl: []
-commands:
-  01_generate_ssl:
-    command: |
-      mkdir -p /etc/pki/tls/certs /etc/pki/tls/private
-      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout /etc/pki/tls/private/internal.key \
-        -out /etc/pki/tls/certs/internal.crt \
-        -subj "/C=$SSL_COUNTRY/ST=$SSL_STATE/L=$SSL_LOCALITY/O=$SSL_ORG/OU=$SSL_UNIT/CN=internal"
-      chmod 600 /etc/pki/tls/private/internal.key
 EOF
 
     # Nginx HTTPS Server Block
@@ -762,65 +834,6 @@ jobs:
           deployment-package-path: moodle-deployment.zip
 EOF
 
-    # 7.5 Moodle PHP Extension Dependencies
-    cat << EOF > .ebextensions/03-php-modules.config
-packages:
-  yum:
-    php8.3-gd: []
-    php8.3-intl: []
-    php8.3-mbstring: []
-    php8.3-soap: []
-    php8.3-xml: []
-    php8.3-process: []
-    php8.3-opcache: []
-    php8.3-pecl-redis6: []
-    ghostscript: []
-EOF
-
-    # 7.6 PHP-FPM Worker Tuning
-    cat << EOF > .ebextensions/04-php-fpm.config
-files:
-  "/etc/php-fpm.d/z-moodle.conf":
-    mode: "000644"
-    owner: root
-    group: root
-    content: |
-      [www]
-      pm = dynamic
-      pm.max_children = 40
-      pm.start_servers = 10
-      pm.min_spare_servers = 10
-      pm.max_spare_servers = 20
-      pm.max_requests = 500
-EOF
-
-    # 7.7 EFS-Locked Cron Job
-    envsubst << 'EOF' > .ebextensions/05-cron.config
-files:
-  "/etc/cron.d/moodle":
-    mode: "000644"
-    owner: root
-    group: root
-    content: |
-      * * * * * root sudo -u webapp /usr/bin/php /var/app/current/admin/cli/cron.php > /dev/null 2>&1
-EOF
-
-    # 7.8 Environment Config
-    cat << EOF > .ebextensions/00-environment.config
-option_settings:
-  aws:elasticbeanstalk:command:
-    Timeout: 1800
-  aws:elasticbeanstalk:environment:proxy:
-    ProxyServer: nginx
-EOF
-
-    # 7.9 Document root
-    cat << EOF > .ebextensions/06-document-root.config
-option_settings:
-  aws:elasticbeanstalk:container:php:phpini:
-    document_root: /public
-EOF
-
     # 7.10 Moodle Config Generation (Note the unquoted EOF to allow variable injection)
     envsubst '$DB_HOST $DB_USERNAME $DB_PASSWORD $WWWROOT' << 'EOF' > config.php
 <?php
@@ -902,18 +915,6 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
     echo "<strong style='color:red;'>EFS is not writable or missing.</strong><br>";
 }
 ?>
-EOF
-
-    # 7.12 enabled nginx and php-fpm
-    cat << EOF > .ebextensions/09-services.config
-services:
-  systemd:
-    php-fpm:
-      enabled: "true"
-      ensureRunning: "true"
-    nginx:
-      enabled: "true"
-      ensureRunning: "true"
 EOF
 
     echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
