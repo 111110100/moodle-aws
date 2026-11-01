@@ -468,6 +468,7 @@ apply_security() {
         --vpc-security-group-ids $EB_SG_ID $DEFAULT_SG_ID \
         --apply-immediately \
         --region $REGION >> $LOG_FILE 2>&1
+
     aws elasticache modify-replication-group \
         --replication-group-id $REDIS_ID \
         --security-group-ids $EB_SG_ID $DEFAULT_SG_ID \
