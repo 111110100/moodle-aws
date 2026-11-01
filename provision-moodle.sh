@@ -292,6 +292,22 @@ provision_redis() {
         --scalable-dimension elasticache:replication-group:Replicas \
         --min-capacity 1 --max-capacity 3 >> $LOG_FILE 2>&1 || true
     echo "   -> Redis HA replication group and read-replica autoscaling initiated." | tee -a $LOG_FILE
+
+    # --------------------------------------------------------------------------
+    # WAIT & ENDPOINT RESOLUTION
+    # --------------------------------------------------------------------------
+    echo "   -> Waiting for Redis cluster to enter 'available' state..." | tee -a $LOG_FILE
+    aws elasticache wait replication-group-available \
+        --replication-group-id $REDIS_ID \
+        --region $REGION
+
+    export REDIS_HOST=$(aws elasticache describe-replication-groups \
+        --replication-group-id $REDIS_ID \
+        --region $REGION \
+        --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
+        --output text 2>>$LOG_FILE || true)
+
+    echo "   -> Active Redis Primary Endpoint: $REDIS_HOST" | tee -a $LOG_FILE
 }
 
 provision_aurora() {
@@ -579,13 +595,18 @@ generate_codebase() {
         --region $REGION \
         --query "DBClusters[0].Endpoint" \
         --output text 2>/dev/null || echo "localhost")
-    export REDIS_HOST=$(aws elasticache describe-replication-groups \
-        --replication-group-id $REDIS_ID \
-        --region $REGION \
-        --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
-        --output text 2>/dev/null)
-    if [ -z "$REDIS_HOST" ] || [ "$REDIS_HOST" == "None" ]; then
-        export REDIS_HOST="127.0.0.1"
+
+    if [ -z "${REDIS_HOST:-}" ] || [ "$REDIS_HOST" == "127.0.0.1" ] || [ "$REDIS_HOST" == "None" ]; then # Dynamic Fallback: Resolve REDIS_HOST if provision_redis was skipped
+        echo "   -> Retrieving Redis endpoint..." | tee -a $LOG_FILE
+        export REDIS_HOST=$(aws elasticache describe-replication-groups \
+            --replication-group-id $REDIS_ID \
+            --region $REGION \
+            --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address" \
+            --output text 2>/dev/null || true)
+
+        if [ -z "$REDIS_HOST" ] || [ "$REDIS_HOST" == "None" ]; then
+            export REDIS_HOST="127.0.0.1"
+        fi
     fi
 
     # 7 - .EBEXTENSIONS START HERE
@@ -864,7 +885,7 @@ jobs:
 EOF
 
     # 7.10 Moodle Config Generation (Note the unquoted EOF to allow variable injection)
-    envsubst '$DB_HOST $DB_USERNAME $DB_PASSWORD $WWWROOT' << 'EOF' > config.php
+    envsubst '$DB_HOST $DB_USERNAME $DB_PASSWORD $WWWROOT $REDIS_HOST' << 'EOF' > config.php
 <?php
 unset($CFG);
 global $CFG;
@@ -903,7 +924,7 @@ $CFG->preventexecpath = true;
 
 // REDIS SESSION HANDLING (ElastiCache TLS)
 $CFG->session_handler_class = '\core\session\redis';
-$CFG->session_redis_host = 'master.marumoodle-redis-tls.trutt8.apse2.cache.amazonaws.com';
+$CFG->session_redis_host = '$REDIS_HOST';
 $CFG->session_redis_port = 6379;
 $CFG->session_redis_encrypt = [
     'ssl' => [
