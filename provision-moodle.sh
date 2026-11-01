@@ -898,6 +898,24 @@ $CFG->sslproxy      = true;
 # Required for Moodle router
 $CFG->routerconfigured = true;
 
+// Prevent executable paths
+$CFG->preventexecpath = true;
+
+// REDIS SESSION HANDLING (ElastiCache TLS)
+$CFG->session_handler_class = '\core\session\redis';
+$CFG->session_redis_host = 'master.marumoodle-redis-tls.trutt8.apse2.cache.amazonaws.com';
+$CFG->session_redis_port = 6379;
+$CFG->session_redis_encrypt = [
+    'ssl' => [
+        'verify_peer'      => false,
+        'verify_peer_name' => false,
+    ]
+];
+$CFG->session_redis_auth = '';
+$CFG->session_redis_prefix = 'mdl_sess_';
+$CFG->session_redis_acquire_lock_timeout = 120;
+$CFG->session_redis_lock_expire = 7200;
+
 # Comment these for prod servers
 $CFG->debug = (E_ALL | E_STRICT);
 $CFG->debugdisplay = 1;
