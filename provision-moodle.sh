@@ -636,7 +636,22 @@ commands:
     test: "! mount | grep /mnt/moodledata"
 EOF
 
-    # 7.1b PHP ini settings
+    # 7.1b Moodle PHP Extension Dependencies
+    cat << EOF > .ebextensions/03-php-modules.config
+packages:
+  yum:
+    php8.3-gd: []
+    php8.3-intl: []
+    php8.3-mbstring: []
+    php8.3-soap: []
+    php8.3-xml: []
+    php8.3-process: []
+    php8.3-opcache: []
+    php8.3-pecl-redis6: []
+    ghostscript: []
+EOF
+
+    # 7.1c PHP ini settings
     cat << EOF > .ebextensions/02-php-settings.config
 files:
   "/etc/php.d/99-moodle.ini":
@@ -651,21 +666,18 @@ files:
       max_execution_time = 300
       memory_limit = 512M
       opcache.enable = 1
-EOF
 
-    # 7.1c Moodle PHP Extension Dependencies
-    cat << EOF > .ebextensions/03-php-modules.config
-packages:
-  yum:
-    php8.3-gd: []
-    php8.3-intl: []
-    php8.3-mbstring: []
-    php8.3-soap: []
-    php8.3-xml: []
-    php8.3-process: []
-    php8.3-opcache: []
-    php8.3-pecl-redis6: []
-    ghostscript: []
+files:
+  "/etc/tmpfiles.d/php-fpm.conf":
+    mode: "000644"
+    owner: root
+    group: root
+    content: |
+      d /var/log/php-fpm 0755 webapp webapp -
+
+commands:
+  01_create_log_dir:
+    command: "mkdir -p /var/log/php-fpm && chown -R webapp:webapp /var/log/php-fpm"
 EOF
 
     # 7.1d PHP-FPM Worker Tuning
@@ -686,7 +698,7 @@ files:
 EOF
 
     # 7.1e EFS-Locked Cron Job
-    envsubst << 'EOF' > .ebextensions/05-cron.config
+    cat << EOF > .ebextensions/05-cron.config
 files:
   "/etc/cron.d/moodle":
     mode: "000644"
@@ -1028,6 +1040,48 @@ find "$APP_DIR" -type f -exec chmod 644 {} +
 
 echo "Permissions hardened successfully."
 EOF
+
+    # 8.3 Ensure internal SSL cert is present, create if not
+    mkdir -p .platform/hooks/postdeploy
+    cat << EOF > .platform/hooks/postdeploy/01_ssl_cert.sh
+#!/bin/bash
+set -e
+
+CERT_DIR="/etc/pki/tls/certs"
+KEY_DIR="/etc/pki/tls/private"
+CERT_FILE="${CERT_DIR}/server.crt"
+KEY_FILE="${KEY_DIR}/server.key"
+
+mkdir -p "$CERT_DIR" "$KEY_DIR"
+
+if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
+    echo "Generating self-signed SSL certificate for backend ALB re-encryption..."
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/CN=localhost/O=MaruMoodle/C=AU"
+
+    chmod 600 "$KEY_FILE"
+    chmod 644 "$CERT_FILE"
+fi
+EOF
+
+    # 8.4 Reload nginx, this usually needed when upgrading AWS platforms
+    cat << EOF > .platform/hooks/postdeploy/02_reload_nginx.sh
+#!/bin/bash
+set -e
+
+echo "[Post-Deploy] Validating Nginx configuration..."
+nginx -t
+
+echo "[Post-Deploy] Reloading Nginx service..."
+systemctl reload nginx || systemctl restart nginx
+
+echo "[Post-Deploy] Nginx successfully reloaded."
+EOF
+
+    # Ensure shell scripts have exec bit
+    find .platform -type f -name "*.sh" -exec chmod +x {} \;
 
     echo "   -> Codebase generated locally in CloudShell." | tee -a $LOG_FILE
 }
