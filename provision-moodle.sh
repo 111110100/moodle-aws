@@ -1080,6 +1080,76 @@ systemctl reload nginx || systemctl restart nginx
 echo "[Post-Deploy] Nginx successfully reloaded."
 EOF
 
+    # 8.5 Check connectivty/health of services
+    envsubst '$REDIS_HOST $DB_HOST' << 'EOF' > .platform/hooks/postdeploy/99_verify_health.sh
+#!/bin/bash
+set -euo pipefail
+
+LOG_TAG="MoodleHealthCheck"
+
+log_info() { echo "[INFO] [$LOG_TAG] $1"; }
+log_error() { echo "[ERROR] [$LOG_TAG] $1" >&2; }
+
+# 1. Verify Nginx & PHP-FPM Service States
+for SERVICE in nginx php-fpm; do
+    if systemctl is-active --quiet "$SERVICE"; then
+        log_info "Service '$SERVICE' is running."
+    else
+        log_error "Service '$SERVICE' is NOT running. Attempting restart..."
+        systemctl restart "$SERVICE" || { log_error "Failed to start '$SERVICE'"; exit 1; }
+    fi
+done
+
+# 2. Test Nginx Configuration Syntax
+log_info "Validating Nginx syntax..."
+nginx -t || { log_error "Nginx configuration syntax failure!"; exit 1; }
+
+# Reload Nginx to ensure HTTPS certificates and config are active
+systemctl reload nginx
+
+# 3. Test Local HTTPS Endpoint (Port 443)
+log_info "Testing local HTTPS endpoint connectivity (https://127.0.0.1/)..."
+HTTP_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" https://127.0.0.1/ || echo "000")
+
+if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
+    log_info "HTTPS listener responding cleanly with HTTP code: $HTTP_CODE"
+else
+    log_error "HTTPS listener health check failed with HTTP code: $HTTP_CODE"
+    exit 1
+fi
+
+# 4. Verify External Backend Dependencies (Aurora DB, Redis TLS, EFS)
+log_info "Verifying backend port connectivity..."
+
+REDIS_SERVER="${REDIS_HOST:-localhost}"
+DB_SERVER="${DB_HOST:-localhost}"
+
+# Test Redis (Port 6379 - Implicit TLS)
+if echo | timeout 3 openssl s_client -connect "${REDIS_SERVER}:6379" -servername "${REDIS_SERVER}" -brief >/dev/null 2>&1; then
+    log_info "Redis TLS connection (6379): SUCCESS"
+else
+    log_error "Redis TLS connection (6379): FAILED to reach $REDIS_HOST"
+    exit 1
+fi
+
+# Test Aurora MySQL (Port 3306 - Explicit STARTTLS)
+if echo | timeout 3 openssl s_client -starttls mysql -connect "${DB_SERVER}:3306" -brief >/dev/null 2>&1; then
+    log_info "Aurora DB TLS connection (3306): SUCCESS"
+else
+    log_error "Aurora DB TLS connection (3306): FAILED to reach $DB_SERVER"
+    exit 1
+fi
+
+# Test EFS Mount Path
+if mountpoint -q /mnt/moodledata; then
+    log_info "EFS filesystem (/mnt/moodledata): MOUNTED"
+else
+    log_error "EFS filesystem (/mnt/moodledata): NOT MOUNTED"
+fi
+
+log_info "Post-deploy health verification completed successfully!"
+EOF
+
     # Ensure shell scripts have exec bit
     find .platform -type f -name "*.sh" -exec chmod +x {} \;
 
