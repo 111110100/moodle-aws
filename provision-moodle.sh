@@ -998,27 +998,8 @@ if (is_dir($efs_path) && is_writable($efs_path)) {
 EOF
 
     # 8 Prep hooks
-    # 8.1 Recent Amazon Linux 2023 security updates fails when php-fpm starts. This fixes it.
-    mkdir -p .platform/hooks/predeploy
-    envsubst << 'EOF' > .platform/hooks/predeploy/01_create_php_fpm_log_dir.sh
-#!/usr/bin/env bash
-# Ensure the PHP-FPM log directory exists with correct permissions before services start
-set -eou pipefail
-
-LOG_DIR="/var/log/php-fpm"
-
-if [ ! -d "$LOG_DIR" ]; then
-    mkdir -p "$LOG_DIR"
-    # PHP-FPM typically runs under the webapp/nginx/apache user;
-    # setting permissions to allow proper logging:
-    chown -R root:root "$LOG_DIR"
-    chmod 755 "$LOG_DIR"
-    echo "Created missing $LOG_DIR directory successfully."
-fi
-EOF
-
-    # 8.2 Change ownsership of PHP files to prevent tampering
-    envsubst << 'EOF' > .platform/hooks/predeploy/02_immutable_permission.sh
+    # 8.1 Change ownsership of PHP files to prevent tampering
+    envsubst << 'EOF' > .platform/hooks/predeploy/01_immutable_permission.sh
 #!/usr/bin/env bash
 # Instead of installing a File Integrity Monitoring (FIM) agent to watch for modified PHP files, enforce immutable permissions
 set -eou pipefail
@@ -1041,7 +1022,7 @@ find "$APP_DIR" -type f -exec chmod 644 {} +
 echo "Permissions hardened successfully."
 EOF
 
-    # 8.3 Ensure internal SSL cert is present, create if not
+    # 8.2 Ensure internal SSL cert is present, create if not
     mkdir -p .platform/hooks/postdeploy
     cat << EOF > .platform/hooks/postdeploy/01_ssl_cert.sh
 #!/bin/bash
@@ -1066,7 +1047,7 @@ if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
 fi
 EOF
 
-    # 8.4 Reload nginx, this usually needed when upgrading AWS platforms
+    # 8.3 Reload nginx, this usually needed when upgrading AWS platforms
     cat << EOF > .platform/hooks/postdeploy/02_reload_nginx.sh
 #!/bin/bash
 set -e
@@ -1080,7 +1061,7 @@ systemctl reload nginx || systemctl restart nginx
 echo "[Post-Deploy] Nginx successfully reloaded."
 EOF
 
-    # 8.5 Check connectivty/health of services
+    # 8.4 Check connectivty/health of services
     envsubst '$REDIS_HOST $DB_HOST' << 'EOF' > .platform/hooks/postdeploy/99_verify_health.sh
 #!/bin/bash
 set -euo pipefail
