@@ -67,7 +67,7 @@ fi
 # Add any extra custom plugins, themes, or local files here
 EXCLUDES=(
   ".git/"
-  ".github/"
+  ".github/workflows/deploy_to_eb.yml"
   ".gitignore"
   ".ebextensions"
   ".platform"
